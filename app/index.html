@@ -32,6 +32,8 @@ $(document).ready(function() {
 var ajaxInProgress = false;
 var previousAngle = null;
 var watchfulEye = false;
+var jobInProgress = false;
+var activeJobId = null;
 
 refreshDownloads();
 $("#help,#player,#downloadSubmit").hide();
@@ -62,8 +64,10 @@ $(document).ajaxStart(function() {
   $("#loader").addClass('spinbow');
 }).ajaxStop(function() {
   ajaxInProgress = false;
-  $("#loader").removeClass('spinbow');
-  $('#downloadSubmit').val("Download").prop('disabled', false);
+  if (!jobInProgress) {
+    $("#loader").removeClass('spinbow');
+    $('#downloadSubmit').val("Download").prop('disabled', false);
+  }
 });
 
 $(document).mousemove(function(event) {
@@ -182,19 +186,62 @@ function closeVideo() {
 }
 
 function downloadSubmit(url, mp3, gif, reencode) {
+  jobInProgress = true;
   $("#url").prop("disabled", true);
   $.post("/system/ajax.php", { download: url, audio: mp3, video: gif, reencode: reencode }, function(e) {
-    var json = jQuery.parseJSON(e);
-    var message = json.status == 2 ? json.message : json.status == 1 ? "Error Downloading Content" : "Download Successful";
-    var className = json.status == 0 ? "success" : "error";
-    $("#output").html(message).addClass(className).clearOutput();
-    if (json.status == 0) {
-      $("#url").val('').prop('disabled', false);
+    var json = typeof e === 'string' ? jQuery.parseJSON(e) : e;
+    if (json.status == 0 && json.jobId) {
+      activeJobId = json.jobId;
+      $('#downloadSubmit').val("Working").prop('disabled', true);
+      $("#output").removeClass("error").html(json.message).addClass("success");
+      pollJob(activeJobId);
+      return;
+    }
+
+    jobInProgress = false;
+    activeJobId = null;
+    $("#url").prop('disabled', false);
+    $('#downloadSubmit').val("Download").prop('disabled', false);
+    $("#loader").removeClass('spinbow');
+    $("#output").html(json.message || "Error Downloading Content").addClass("error").clearOutput();
+  });
+}
+
+function pollJob(jobId) {
+  $.get("/system/ajax.php", { job: jobId }, function(e) {
+    var json = typeof e === 'string' ? jQuery.parseJSON(e) : e;
+    if (json.status != 0 || !json.job) {
+      finishJob("Download status failed", "error");
+      return;
+    }
+
+    var job = json.job;
+    $("#output").removeClass("error success").html(job.message || "Working").addClass(job.state === "failed" ? "error" : "success");
+
+    if (job.state === "complete") {
+      finishJob("Download Successful", "success");
+      $("#url").val('');
       refreshDownloads();
       $(".box.list").animate({ scrollTop: 0 }, "slow");
+      return;
     }
-    else { $("#url").prop('disabled', false); }
+
+    if (job.state === "failed") {
+      finishJob(job.message || "Error Downloading Content", "error");
+      return;
+    }
+
+    setTimeout(function() { pollJob(jobId); }, 2000);
   });
+}
+
+function finishJob(message, className) {
+  jobInProgress = false;
+  activeJobId = null;
+  $("#url").prop('disabled', false);
+  $('#downloadSubmit').val("Download").prop('disabled', false);
+  $("#loader").removeClass('spinbow');
+  $("#output").removeClass("error success").html(message).addClass(className).clearOutput();
 }
 
 function checkUrl() {

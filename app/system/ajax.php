@@ -4,6 +4,8 @@ error_reporting(E_ALL);
 
 define('TEMP_DIR', '/var/www/html/temp');
 define('FINAL_DIR', '/var/www/html/download');
+define('JOB_DIR', TEMP_DIR . '/jobs');
+define('WORK_DIR', TEMP_DIR . '/work');
 define('SUPPORTED_EXTENSIONS', ['mp3', 'mp4', 'gif', 'webm']);
 define('ENCODE_EXTENSIONS', ['mov', 'mkv', 'avi', 'flv']);
 define('OUTPUT_TEMPLATE', '%(title).180B [%(id)s].%(ext)s');
@@ -63,9 +65,8 @@ function getMediaDuration($url) {
   return null;
 }
 
-function downloadVideo() {
-  if (!is_dir(TEMP_DIR)) mkdir(TEMP_DIR, 0775, true);
-  if (!is_dir(FINAL_DIR)) mkdir(FINAL_DIR, 0775, true);
+function enqueueDownload() {
+  ensureRuntimeDirs();
 
   $url = $_POST['download'] ?? '';
   if (!filter_var($url, FILTER_VALIDATE_URL)) {
@@ -83,56 +84,178 @@ function downloadVideo() {
     return;
   }
 
-  if ($isGif || $reEncode) {
-    $duration = getMediaDuration($url);
-    if ($duration === null) {
-      sendJsonResponse(2, "Failed to retrieve media duration.");
-      return;
-    }
-    if ($isGif && $duration > 600) {
-      sendJsonResponse(2, "Media is too long for GIF conversion. Maximum allowed is 10 minutes.");
-      return;
-    }
-    if ($reEncode && $duration > 7200) {
-      sendJsonResponse(2, "Media is too long for AVC re-encoding. Maximum allowed is 2 hours.");
-      return;
-    }
-  }
+  $jobId = createJobId();
+  $job = [
+    'id' => $jobId,
+    'url' => $url,
+    'audio' => $isMp3,
+    'video' => $isGif,
+    'reencode' => $reEncode,
+    'state' => 'queued',
+    'message' => 'Download queued.',
+    'createdAt' => time(),
+    'updatedAt' => time()
+  ];
 
-  $workDir = createWorkDir();
-  if ($workDir === null) {
-    sendJsonResponse(2, "Failed to create temporary work directory.");
+  if (!writeJob($jobId, $job)) {
+    sendJsonResponse(2, "Failed to create download job.");
     return;
   }
 
+  launchJobWorker($jobId);
+  sendJsonResponse(0, "Download queued.", ['jobId' => $jobId, 'state' => 'queued']);
+}
+
+function createJobId() {
+  return bin2hex(random_bytes(12));
+}
+
+function ensureRuntimeDirs() {
+  foreach ([TEMP_DIR, FINAL_DIR, JOB_DIR, WORK_DIR] as $dir) {
+    if (!is_dir($dir)) mkdir($dir, 0775, true);
+  }
+}
+
+function getJobPath($jobId) {
+  if (!preg_match('/^[a-f0-9]{24}$/', $jobId)) return null;
+  return JOB_DIR . DIRECTORY_SEPARATOR . $jobId . '.json';
+}
+
+function readJob($jobId) {
+  $path = getJobPath($jobId);
+  if ($path === null || !is_file($path)) return null;
+
+  $job = json_decode(file_get_contents($path), true);
+  return is_array($job) ? $job : null;
+}
+
+function writeJob($jobId, $job) {
+  $path = getJobPath($jobId);
+  if ($path === null) return false;
+
+  $job['updatedAt'] = time();
+  return file_put_contents($path, json_encode($job, JSON_PRETTY_PRINT), LOCK_EX) !== false;
+}
+
+function updateJob($jobId, $changes) {
+  $job = readJob($jobId);
+  if ($job === null) return false;
+
+  foreach ($changes as $key => $value) { $job[$key] = $value; }
+  return writeJob($jobId, $job);
+}
+
+function sendJobStatus($jobId) {
+  $job = readJob($jobId);
+  if ($job === null) {
+    sendJsonResponse(2, "Job not found.");
+    return;
+  }
+
+  unset($job['url']);
+  sendJsonResponse(0, $job['message'] ?? 'Job status loaded.', ['job' => $job]);
+}
+
+function launchJobWorker($jobId) {
+  $command = sprintf(
+    'php %s run-job %s > /dev/null 2>&1 &',
+    escapeshellarg(__FILE__),
+    escapeshellarg($jobId)
+  );
+  exec($command);
+}
+
+function runJob($jobId) {
+  ensureRuntimeDirs();
+
+  $job = readJob($jobId);
+  if ($job === null) {
+    error_log("Download job not found: $jobId");
+    return 1;
+  }
+
+  updateJob($jobId, ['state' => 'running', 'message' => 'Starting download.']);
+  $workDir = createWorkDir($jobId);
+  if ($workDir === null) {
+    failJob($jobId, null, "Failed to create temporary work directory.");
+    return 1;
+  }
+
+  $result = processDownload($jobId, $job, $workDir);
+  cleanupWorkDir($workDir);
+  return $result ? 0 : 1;
+}
+
+function processDownload($jobId, $job, $workDir) {
+  $url = $job['url'];
+  $isGif = (int)$job['video'];
+  $isMp3 = (int)$job['audio'];
+  $reEncode = (int)$job['reencode'];
+
+  if ($isGif || $reEncode) {
+    updateJob($jobId, ['state' => 'checking', 'message' => 'Checking media duration.']);
+    $duration = getMediaDuration($url);
+    if ($duration === null) {
+      failJob($jobId, null, "Failed to retrieve media duration.");
+      return false;
+    }
+    if ($isGif && $duration > 600) {
+      failJob($jobId, null, "Media is too long for GIF conversion. Maximum allowed is 10 minutes.");
+      return false;
+    }
+    if ($reEncode && $duration > 7200) {
+      failJob($jobId, null, "Media is too long for AVC re-encoding. Maximum allowed is 2 hours.");
+      return false;
+    }
+  }
+
+  updateJob($jobId, ['state' => 'downloading', 'message' => 'Downloading media.']);
   $command = buildYtDlpCommand($url, $isMp3, $workDir);
   $executionResult = executeCommand($command);
 
   if ($executionResult['exitCode'] !== 0) {
-    cleanupWorkDir($workDir);
-    sendJsonResponse(2, "Process initiation failed.", $executionResult);
-    return;
+    failJob($jobId, $executionResult, "Download failed.");
+    return false;
   }
 
-  if ($reEncode && !reEncodeFiles($workDir)) {
-    cleanupWorkDir($workDir);
-    sendJsonResponse(2, "AVC Re-Encode Failed");
-    return;
+  if ($reEncode) {
+    updateJob($jobId, ['state' => 'encoding', 'message' => 'Re-encoding video to H264.']);
+    if (!reEncodeFiles($workDir)) {
+      failJob($jobId, null, "AVC re-encode failed.");
+      return false;
+    }
   }
 
-  if ($isGif && !handleGifConversion($workDir, FINAL_DIR)) {
-    cleanupWorkDir($workDir);
-    sendJsonResponse(2, "GIF Conversion Failed");
-    return;
+  if ($isGif) {
+    updateJob($jobId, ['state' => 'encoding', 'message' => 'Converting video to GIF.']);
+    if (!handleGifConversion($workDir, FINAL_DIR)) {
+      failJob($jobId, null, "GIF conversion failed.");
+      return false;
+    }
   }
 
+  updateJob($jobId, ['state' => 'finalizing', 'message' => 'Moving processed files.']);
   moveProcessedFiles($workDir, FINAL_DIR);
-  cleanupWorkDir($workDir);
-  sendJsonResponse(0, "Download and processing successful.", $executionResult);
+  updateJob($jobId, ['state' => 'complete', 'message' => 'Download complete.', 'completedAt' => time()]);
+  return true;
 }
 
-function createWorkDir() {
-  $workDir = TEMP_DIR . DIRECTORY_SEPARATOR . 'job-' . bin2hex(random_bytes(8));
+function failJob($jobId, $executionResult, $message) {
+  $changes = ['state' => 'failed', 'message' => $message, 'completedAt' => time()];
+  if (is_array($executionResult)) {
+    $changes['exitCode'] = $executionResult['exitCode'] ?? null;
+    $changes['stderr'] = tailText($executionResult['stderr'] ?? '');
+  }
+  updateJob($jobId, $changes);
+}
+
+function tailText($text, $limit = 4000) {
+  if (strlen($text) <= $limit) return $text;
+  return substr($text, -$limit);
+}
+
+function createWorkDir($jobId) {
+  $workDir = WORK_DIR . DIRECTORY_SEPARATOR . $jobId;
   return mkdir($workDir, 0775, true) ? $workDir : null;
 }
 
@@ -233,7 +356,9 @@ function reEncodeFile($file, $directory) {
 function moveProcessedFiles($sourceDir, $targetDir) {
   $files = array_diff(scandir($sourceDir), ['.', '..']);
   foreach ($files as $file) {
-    rename($sourceDir . DIRECTORY_SEPARATOR . $file, $targetDir . DIRECTORY_SEPARATOR . $file);
+    $sourcePath = $sourceDir . DIRECTORY_SEPARATOR . $file;
+    $targetPath = $targetDir . DIRECTORY_SEPARATOR . $file;
+    if (is_file($sourcePath)) rename($sourcePath, $targetPath);
   }
 }
 
@@ -250,17 +375,26 @@ function cleanupWorkDir($directory) {
 }
 
 function sendJsonResponse($status, $message, $additionalData = []) {
+  if (!headers_sent()) header('Content-Type: application/json');
   echo json_encode(array_merge(['status' => $status, 'message' => $message], $additionalData));
+}
+
+if (PHP_SAPI === 'cli') {
+  $command = $argv[1] ?? '';
+  if ($command === 'run-job' && isset($argv[2])) exit(runJob($argv[2]));
+  fwrite(STDERR, "Unsupported CLI command.\n");
+  exit(1);
 }
 
 // Route requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   if (isset($_POST['file'])) { echo deleteFile($_POST['file']) ? 'true' : 'false'; }
   elseif (isset($_POST['url'])) { echo filter_var($_POST['url'], FILTER_VALIDATE_URL) ? 'true' : 'false'; }
-  elseif (isset($_POST['download'])) { downloadVideo(); }
+  elseif (isset($_POST['download'])) { enqueueDownload(); }
   else { sendJsonResponse(2, "Invalid Request"); }
 }
 elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['refresh']) && $_GET['refresh'] === "downloads") { listDownloads(); }
+elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['job'])) { sendJobStatus($_GET['job']); }
 else { sendJsonResponse(2, "Unsupported Request Method."); }
 
 ?>
