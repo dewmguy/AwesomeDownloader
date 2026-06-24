@@ -1,20 +1,27 @@
 # Awesome Downloader
 
-Awesome Downloader is a tiny self-hosted web front end for `yt-dlp`: paste a media URL, choose an output format, and let the container do the downloading and conversion work. It is intentionally simple, easy to recover, and useful from any browser on your network.
+Awesome Downloader is a self-hosted web interface for downloading and converting media with [`yt-dlp`](https://github.com/yt-dlp/yt-dlp). Paste a supported media URL, choose an output format, and download the finished file from your browser.
+
+The app runs in Docker and includes PHP, Apache, `yt-dlp`, and `ffmpeg`. Runtime files are stored in mounted directories so the container can be rebuilt or replaced without losing completed downloads.
 
 ## Features
 
-- Browser UI for `yt-dlp` downloads
-- Base media download with MP4 merge support
-- MP3 extraction for audio-first saves
-- H264 re-encode option for device-friendly MP4 playback
-- GIF conversion for short clips
-- Recent downloads list with play, save, delete, and refresh controls
-- Dockerized PHP/Apache runtime with `ffmpeg` and the latest `yt-dlp` release downloaded at build time
+- Simple browser-based download form
+- Background job processing for long downloads and conversions
+- Recent downloads list with play, save, delete, and refresh actions
+- Supported output modes:
+  - Original media download
+  - MP3 audio extraction
+  - MP4/H264 re-encode
+  - GIF conversion for short clips
+  - WebM playback and listing
+- Per-job temporary work directories
+- Docker image with `ffmpeg` and `yt-dlp` installed at build time
+- Configurable runtime paths, duration limits, and output naming
 
-## Install
+## Quick Start
 
-Clone the repo and start the container:
+Clone the repository and start the container:
 
 ```bash
 git clone git@github.com:dewmguy/AwesomeDownloader.git
@@ -22,49 +29,96 @@ cd AwesomeDownloader
 docker compose up -d --build
 ```
 
-Open the app locally at:
+Open the app:
 
 ```text
 http://localhost:8080
 ```
 
-The current production deployment is published at:
+The included `compose.yaml` maps the app to port `8080` on the host. The container itself listens on port `80`, so it can also sit behind a reverse proxy, Cloudflare Tunnel, Tailscale Funnel, Pangolin, Nginx Proxy Manager, or another HTTP gateway.
 
-```text
-https://downloader.wabsite.tech
-```
+## Requirements
 
-For a reverse proxy or tunnel setup, publish the container however you normally expose internal HTTP services. The app itself listens on port `80` inside the container.
+- Docker
+- Docker Compose v2
+- Internet access during image build so the image can install packages and download `yt-dlp`
 
 ## Configuration
 
-The defaults work out of the box, but these environment variables can tune a deployment:
+The default configuration works for local use. These environment variables can be set in `compose.yaml` or your own compose stack:
 
-- `DOWNLOADER_TEMP_DIR`: temporary job and work directory, default `/var/www/html/temp`
-- `DOWNLOADER_FINAL_DIR`: completed media directory, default `/var/www/html/download`
-- `DOWNLOADER_GIF_MAX_SECONDS`: maximum GIF source duration, default `600`
-- `DOWNLOADER_REENCODE_MAX_SECONDS`: maximum H264 re-encode source duration, default `7200`
-- `DOWNLOADER_OUTPUT_TEMPLATE`: `yt-dlp` output template, default `%(title).180B [%(id)s].%(ext)s`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DOWNLOADER_TEMP_DIR` | `/var/www/html/temp` | Temporary job metadata and work files |
+| `DOWNLOADER_FINAL_DIR` | `/var/www/html/download` | Completed downloads |
+| `DOWNLOADER_GIF_MAX_SECONDS` | `600` | Maximum source duration for GIF conversion |
+| `DOWNLOADER_REENCODE_MAX_SECONDS` | `7200` | Maximum source duration for H264 re-encode |
+| `DOWNLOADER_OUTPUT_TEMPLATE` | `%(title).180B [%(id)s].%(ext)s` | `yt-dlp` output filename template |
 
-## Data Layout
+Example:
 
-The compose file keeps runtime data outside the image:
+```yaml
+services:
+  apache-downloader:
+    environment:
+      DOWNLOADER_GIF_MAX_SECONDS: 300
+      DOWNLOADER_REENCODE_MAX_SECONDS: 3600
+```
 
-- `app/` is mounted at `/var/www/html`
-- `download/` is mounted at `/var/www/html/download`
-- `temp/` is mounted at `/var/www/html/temp`
+## Data Directories
 
-Downloaded files live in `download/`. Temporary work files live in `temp/`. Both directories are ignored by git except for `.gitkeep` placeholders.
+The default compose file uses three project directories:
 
-## Recovery
+| Host path | Container path | Purpose |
+| --- | --- | --- |
+| `./app` | `/var/www/html` | Web application files |
+| `./download` | `/var/www/html/download` | Completed downloads |
+| `./temp` | `/var/www/html/temp` | Job status and temporary work files |
 
-A clean recovery is intentionally boring:
+`download/` and `temp/` are ignored by git except for `.gitkeep` placeholders. Back up `download/` if you want to preserve completed media.
 
-1. Clone the repository on the target host.
-2. Restore any saved media into `download/` if needed.
-3. Run `docker compose up -d --build`.
-4. Confirm the app responds with `curl -I http://localhost:8080/`.
-5. Confirm runtime tools with:
+## Updating
+
+Pull the latest code and rebuild the container:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+If you use a custom compose file, keep the same mounted paths or set `DOWNLOADER_TEMP_DIR` and `DOWNLOADER_FINAL_DIR` to match your layout.
+
+## Backup and Restore
+
+To back up a deployment, keep a copy of:
+
+- `download/` for completed media
+- any custom `compose.yaml` changes
+- any reverse proxy or tunnel configuration outside this repository
+
+To restore:
+
+1. Clone the repository on the new host.
+2. Restore `download/` if you have saved media.
+3. Apply any custom compose or proxy settings.
+4. Run `docker compose up -d --build`.
+5. Open `http://localhost:8080` or your configured public URL.
+
+## Troubleshooting
+
+Check whether the container is running:
+
+```bash
+docker ps --filter name=apache-downloader
+```
+
+Check application logs:
+
+```bash
+docker logs apache-downloader --tail 100
+```
+
+Confirm the runtime tools are available:
 
 ```bash
 docker exec apache-downloader php -v
@@ -72,41 +126,20 @@ docker exec apache-downloader yt-dlp --version
 docker exec apache-downloader ffmpeg -version
 ```
 
-If the container starts but downloads fail, check logs with:
+Confirm the app responds locally:
 
 ```bash
-docker logs apache-downloader --tail 100
+curl -I http://localhost:8080/
 ```
 
-## Existing Host Deployment
+If the page loads but downloads fail, verify that the mounted `temp/` and `download/` directories are writable by the container. For bind mounts, the Apache process in the container runs as `www-data`.
 
-On the current production host, the public app lives at `https://downloader.wabsite.tech` and the private compose stack mounts:
+## Security Notes
 
-- `/opt/html/downloader/app` to `/var/www/html`
-- `/opt/html/downloader/temp` to `/var/www/html/temp`
-- `/opt/html/downloader/download` to `/var/www/html/download`
+This project is intended for personal or trusted-user deployments. It does not include authentication, rate limiting, account management, quota controls, or multi-user isolation. Put it behind an access-controlled proxy or private network if it is reachable from the internet.
 
-When syncing files into that layout, preserve or restore Apache-readable permissions:
+Only download media that you have the right to access and store. Site support, format availability, and download behavior depend on `yt-dlp` and the source platform.
 
-```bash
-chmod -R u+rwX,g+rwX,o+rX /opt/html/downloader/app
-chmod -R u+rwX,g+rwX,o-rwx /opt/html/downloader/temp /opt/html/downloader/download
-```
+## License
 
-The `temp` and `download` directories must remain writable by the container's `www-data` user or group.
-
-## Current Optimization Plan
-
-The next improvements are focused on reliability and user feedback:
-
-- Move long downloads and encodes out of the HTTP request path into background jobs
-- Give each job its own temp directory
-- Add status/progress polling to the UI
-- Tighten output naming to avoid filename collisions
-- Skip metadata duration checks unless the selected mode needs a duration limit
-- Hide or clean up partial and unsupported files
-- Keep Docker and runtime configuration reproducible without leaking host-specific secrets
-
-## Notes
-
-The included `compose.yaml` is safe to commit and intended as the recovery source of truth. If you run this from a larger personal compose stack, keep private service tokens and unrelated services in that private stack, not in this public repo.
+See [LICENSE](LICENSE).
