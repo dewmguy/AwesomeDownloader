@@ -6,6 +6,7 @@ define('TEMP_DIR', '/var/www/html/temp');
 define('FINAL_DIR', '/var/www/html/download');
 define('SUPPORTED_EXTENSIONS', ['mp3', 'mp4', 'gif']);
 define('ENCODE_EXTENSIONS', ['mov', 'mkv', 'avi', 'flv']);
+define('OUTPUT_TEMPLATE', '%(title).180B [%(id)s].%(ext)s');
 
 function listDownloads() {
   $files = getFilteredFiles(FINAL_DIR, SUPPORTED_EXTENSIONS);
@@ -18,6 +19,8 @@ function listDownloads() {
 }
 
 function getFilteredFiles($dir, $extensions) {
+  if (!is_dir($dir)) return [];
+
   $files = array_diff(scandir($dir), ['.', '..']);
   return array_filter($files, fn($file) => isValidFile($dir, $file, $extensions));
 }
@@ -60,6 +63,7 @@ function getMediaDuration($url) {
 
 function downloadVideo() {
   if (!is_dir(TEMP_DIR)) mkdir(TEMP_DIR, 0775, true);
+  if (!is_dir(FINAL_DIR)) mkdir(FINAL_DIR, 0775, true);
 
   $url = $_POST['download'] ?? '';
   if (!filter_var($url, FILTER_VALIDATE_URL)) {
@@ -67,50 +71,67 @@ function downloadVideo() {
     return;
   }
 
-  $isGif = $_POST['video'] ?? 0;
-  $isMp3 = $_POST['audio'] ?? 0;
-  $reEncode = $_POST['reencode'] ?? 0;
+  $isGif = (int)($_POST['video'] ?? 0);
+  $isMp3 = (int)($_POST['audio'] ?? 0);
+  $reEncode = (int)($_POST['reencode'] ?? 0);
 
   if ($isGif + $isMp3 + $reEncode > 1) {
-    error_log("more than one encoding selection was passed, someone's fucky.");
+    error_log("More than one encoding selection was passed.");
     sendJsonResponse(2, "Cannot process more than one selection of encoding.");
     return;
   }
-  
-  $duration = getMediaDuration($url);
-  if ($duration === null) {
-    sendJsonResponse(2, "Failed to retrieve media duration.");
-    return;
+
+  if ($isGif || $reEncode) {
+    $duration = getMediaDuration($url);
+    if ($duration === null) {
+      sendJsonResponse(2, "Failed to retrieve media duration.");
+      return;
+    }
+    if ($isGif && $duration > 600) {
+      sendJsonResponse(2, "Media is too long for GIF conversion. Maximum allowed is 10 minutes.");
+      return;
+    }
+    if ($reEncode && $duration > 7200) {
+      sendJsonResponse(2, "Media is too long for AVC re-encoding. Maximum allowed is 2 hours.");
+      return;
+    }
   }
-  if ($isGif && $duration > 600) {
-    sendJsonResponse(2, "Media is too long for GIF conversion. Maximum allowed is 10 minutes.");
-    return;
-  }
-  if ($reEncode && $duration > 7200) {
-    sendJsonResponse(2, "Media is too long for AVC re-encoding. Maximum allowed is 2 hours.");
+
+  $workDir = createWorkDir();
+  if ($workDir === null) {
+    sendJsonResponse(2, "Failed to create temporary work directory.");
     return;
   }
 
-  $command = buildYtDlpCommand($url, $isMp3);
+  $command = buildYtDlpCommand($url, $isMp3, $workDir);
   $executionResult = executeCommand($command);
 
   if ($executionResult['exitCode'] !== 0) {
+    cleanupWorkDir($workDir);
     sendJsonResponse(2, "Process initiation failed.", $executionResult);
     return;
   }
 
-  if ($reEncode && !reEncodeFiles(TEMP_DIR)) {
+  if ($reEncode && !reEncodeFiles($workDir)) {
+    cleanupWorkDir($workDir);
     sendJsonResponse(2, "AVC Re-Encode Failed");
     return;
   }
-  
-  if ($isGif && !handleGifConversion(TEMP_DIR, FINAL_DIR)) {
+
+  if ($isGif && !handleGifConversion($workDir, FINAL_DIR)) {
+    cleanupWorkDir($workDir);
     sendJsonResponse(2, "GIF Conversion Failed");
     return;
   }
 
-  moveProcessedFiles(TEMP_DIR, FINAL_DIR);
+  moveProcessedFiles($workDir, FINAL_DIR);
+  cleanupWorkDir($workDir);
   sendJsonResponse(0, "Download and processing successful.", $executionResult);
+}
+
+function createWorkDir() {
+  $workDir = TEMP_DIR . DIRECTORY_SEPARATOR . 'job-' . bin2hex(random_bytes(8));
+  return mkdir($workDir, 0775, true) ? $workDir : null;
 }
 
 function convertToGif($inputFile, $outputFile) {
@@ -124,24 +145,24 @@ function convertToGif($inputFile, $outputFile) {
 }
 
 function handleGifConversion($tempDir, $finalDir) {
-  $videoFile = glob($tempDir . '/*.mp4'); // Find the downloaded video file
+  $videoFile = glob($tempDir . '/*.mp4');
   if (empty($videoFile)) {
     error_log("No MP4 files found in temporary directory for GIF conversion.");
     return false;
   }
-  $inputFile = $videoFile[0]; // Assuming the first MP4 file is the one to convert
+  $inputFile = $videoFile[0];
   $outputFile = $finalDir . '/' . pathinfo($inputFile, PATHINFO_FILENAME) . '.gif';
   if (!convertToGif($inputFile, $outputFile)) {
     error_log("GIF conversion failed for file: $inputFile");
     return false;
   }
-  unlink($inputFile); // Cleanup the temporary video file after successful conversion
+  unlink($inputFile);
   return true;
 }
 
-function buildYtDlpCommand($url, $isMp3) {
+function buildYtDlpCommand($url, $isMp3, $workDir) {
   $urlEscaped = escapeshellarg($url);
-  $outputPath = "-o '%(title)s.%(ext)s' -P '" . TEMP_DIR . "'";
+  $outputPath = "-o " . escapeshellarg(OUTPUT_TEMPLATE) . " -P " . escapeshellarg($workDir);
   $flags = $isMp3 ? "-x --audio-format mp3 --audio-quality 0" : "--merge-output-format mp4";
   return sprintf("yt-dlp %s --no-mtime %s %s", $flags, $urlEscaped, $outputPath);
 }
@@ -165,7 +186,6 @@ function reEncodeFiles($directory) {
     $codec = getVideoCodec($filePath);
 
     if ($codec !== 'h264') {
-      //error_log("Codec is not x264, requires re-encode. Reencoding...");
       if (!reEncodeFile($file, $directory)) {
         error_log("Error re-encoding file: $file");
         error_log("File Path: $file");
@@ -182,8 +202,6 @@ function getVideoCodec($file) {
   exec($ffprobeCommand, $output, $retCode);
 
   if ($retCode === 0 && isset($output[0])) {
-    $codec = $output[0];
-    //error_log("ffprobe determined codec for $file is $codec");
     return trim($output[0]);
   }
 
@@ -195,14 +213,12 @@ function getVideoCodec($file) {
 function reEncodeFile($file, $directory) {
   $filePath = escapeshellarg($file);
   $outputFile = escapeshellarg($directory . '/' . pathinfo($file, PATHINFO_FILENAME) . '_avc.mp4');
-  $finalFile = escapeshellarg($directory . '/' . pathinfo($file, PATHINFO_FILENAME) . '.mp4');
 
   $ffmpegCommand = "ffmpeg -i $filePath -c:v libx264 -c:a aac -strict experimental $outputFile";
   exec($ffmpegCommand, $output, $retCode);
 
   if ($retCode === 0) {
-    //rename($outputFile, $finalFile);
-    unlink($file); // Remove the original media
+    unlink($file);
     return true;
   }
 
@@ -217,6 +233,18 @@ function moveProcessedFiles($sourceDir, $targetDir) {
   foreach ($files as $file) {
     rename($sourceDir . DIRECTORY_SEPARATOR . $file, $targetDir . DIRECTORY_SEPARATOR . $file);
   }
+}
+
+function cleanupWorkDir($directory) {
+  if (!is_dir($directory)) return;
+
+  $files = array_diff(scandir($directory), ['.', '..']);
+  foreach ($files as $file) {
+    $path = $directory . DIRECTORY_SEPARATOR . $file;
+    if (is_dir($path)) cleanupWorkDir($path);
+    else unlink($path);
+  }
+  rmdir($directory);
 }
 
 function sendJsonResponse($status, $message, $additionalData = []) {
