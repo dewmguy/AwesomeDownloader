@@ -1,0 +1,13 @@
+services:
+  apache-downloader:
+    build:
+      context: .
+    image: awesome-downloader:latest
+    container_name: apache-downloader
+    ports:
+      - "8080:80"
+    volumes:
+      - ./app:/var/www/html
+      - ./temp:/var/www/html/temp
+      - ./download:/var/www/html/download
+    restart: unless-stopped

@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en-us">
+
+<head>
+<title>Awesome Media Downloader</title>
+<meta content="text/html;charset=utf-8" http-equiv="Content-Type">
+<meta content="utf-8" http-equiv="encoding">
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link type="text/css" href="system/style.css" rel="stylesheet" />
+<link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
+<link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
+<link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
+<link rel="apple-touch-icon" sizes="76x76" href="/system/favicon/apple-icon-76x76.png" />
+<link rel="apple-touch-icon" sizes="114x114" href="/system/favicon/apple-icon-114x114.png" />
+<link rel="apple-touch-icon" sizes="120x120" href="/system/favicon/apple-icon-120x120.png" />
+<link rel="apple-touch-icon" sizes="144x144" href="/system/favicon/apple-icon-144x144.png" />
+<link rel="apple-touch-icon" sizes="152x152" href="/system/favicon/apple-icon-152x152.png" />
+<link rel="apple-touch-icon" sizes="180x180" href="/system/favicon/apple-icon-180x180.png" />
+<link rel="icon" type="image/png" sizes="192x192"  href="/system/favicon/android-icon-192x192.png" />
+<link rel="icon" type="image/png" sizes="32x32" href="/system/favicon/favicon-32x32.png" />
+<link rel="icon" type="image/png" sizes="96x96" href="/system/favicon/favicon-96x96.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="/system/favicon/favicon-16x16.png" />
+<link rel="manifest" href="/system/favicon/manifest.json" />
+<meta name="msapplication-TileColor" content="#ffffff" />
+<meta name="msapplication-TileImage" content="/system/favicon/ms-icon-144x144.png">
+<meta name="theme-color" content="#ffffff" />
+<script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+<script src="https://kit.fontawesome.com/666b0b7246.js" crossorigin="anonymous"></script>
+<script>
+$(document).ready(function() {
+
+var ajaxInProgress = false;
+var previousAngle = null;
+var watchfulEye = false;
+
+refreshDownloads();
+$("#help,#player,#downloadSubmit").hide();
+$('#loader').on('click', function() { watchfulEye = watchfulEye ? false : true; });
+$('#url').on('keyup', checkUrl);
+checkUrl();
+
+$(document).on('click', '.delete', function() {
+  var fileName = $(this).data('file');
+  if (confirm('Are you sure you want to delete this file?')) {
+    $.ajax({
+      url: '/system/ajax.php',
+      type: 'POST',
+      data: { 'file': fileName },
+      success: function(response) {
+        if (response === 'true') {
+          refreshDownloads();
+          $("#output").html("File Deleted").addClass("success").clearOutput();
+        }
+        else { $("#output").html("Error Deleting File").addClass("error").clearOutput(); }
+      }
+    });
+  }
+});
+
+$(document).ajaxStart(function() {
+  ajaxInProgress = true;
+  $("#loader").addClass('spinbow');
+}).ajaxStop(function() {
+  ajaxInProgress = false;
+  $("#loader").removeClass('spinbow');
+  $('#downloadSubmit').val("Download").prop('disabled', false);
+});
+
+$(document).mousemove(function(event) {
+  var radius = 1000;
+  var adjust = 45;
+  if(!ajaxInProgress && watchfulEye) {
+    var $loader = $('#loader');
+    var loaderOffset = $loader.offset();
+    var loaderCenterX = loaderOffset.left + $loader.width() / 2;
+    var loaderCenterY = loaderOffset.top + $loader.height() / 2;
+    var distance = Math.sqrt(Math.pow(event.pageX - loaderCenterX, 2) + Math.pow(event.pageY - loaderCenterY, 2));
+    if(distance < radius) {
+      var angle = Math.atan2(event.pageY - loaderCenterY, event.pageX - loaderCenterX) * 180 / Math.PI + adjust;
+      if(previousAngle != null) {
+        var delta = angle - previousAngle;
+        if(delta > 180) angle -= 360;
+        else if(delta < -180) angle += 360;
+      }
+      $loader.css('transform', 'rotate(' + angle + 'deg)');
+      previousAngle = angle;
+    }
+    else {
+      previousAngle = null;
+      $loader.css('transform', '');
+    }
+  }
+});
+
+$(document).on('click', '.play', function() {
+  $("html, body").animate({ scrollTop: 0 }, "slow");
+  $('.play').removeClass('clicked');
+  $(this).addClass("clicked");
+  var file = $(this).data('file');
+  var extension = file.split('.').pop().toLowerCase();
+  var filePath = '/download/' + file;
+  var playerHTML = '';
+  var mediaType = '';
+  var mimeType = '';
+  var closerHTML = '<div id="closer"><i class="fa-solid fa-xmark"></i></div>';
+  if (extension === 'mp3') { mediaType = 'audio'; mimeType = mediaType + '/mpeg'; }
+  if (extension === 'mp4') { mediaType = 'video'; mimeType = mediaType + '/mp4'; }
+  playerHTML = '<' + mediaType + ' id="mediaPlayer" controls autoplay>' +
+               '<source src="' + filePath + '" type="' + mimeType + '">' +
+               'Your browser does not support the ' + mediaType + ' element or this media type is not compatible with the element.' +
+               '</' + mediaType + '>';
+  if (extension === 'gif') { playerHTML = '<div id="image"><img src="' + filePath + '?_=' + new Date().getTime() + '"/></div>'; }
+  $('#player').empty().html(closerHTML + playerHTML).show();
+  $('#mediaPlayer').on('ended', function() {
+    closeVideo();
+    refreshDownloads();
+  });
+});
+
+$(document).on('play', '#mediaPlayer', function() { $('#closer').show(); });
+
+$(document).on('click', '#closer', function() {
+  var mediaPlayer = $('#mediaPlayer');
+  mediaPlayer.trigger('pause');
+  mediaPlayer.remove();
+  $('#player').empty();
+  $(this).hide();
+  refreshDownloads();
+});
+
+$("#helpcloser,#help").click(function() {
+  $("#helpcloser,#help").hide();
+});
+
+$("#helplink").click(function(){
+  $("#helpcloser").show();
+  $("#help").show();
+});
+
+$("#audio, #video, #reencode, #none").click(function() {
+  $("#audio, #video, #reencode, #none").not(this).prop("checked", false);
+  if (!$("#audio, #video, #reencode").is(":checked")) { $("#none").prop("checked", true); }
+});
+
+$("#reload").on('click', function() {
+  $(this).addClass("spinonce");
+  refreshDownloads();
+}).on('animationend', function() { $(this).removeClass("spinonce"); });
+
+$("form").submit(function(e) {
+  e.preventDefault();
+  $("#output").removeClass("success error").html("");
+  var url = $("#url").val().trim();
+  var audioObj = $("#audio");
+  var videoObj = $("#video");
+  var reencodeObj = $("#reencode");
+
+  if(audioObj.is(":checked")) { var audio = 1; } else { var audio = 0 }
+  if(videoObj.is(":checked")) { var video = 1; } else { var video = 0 }
+  if(reencodeObj.is(":checked")) { var reencode = 1; } else { var reencode = 0 }
+
+  if(url !== "") {
+    downloadSubmit(url, audio, video, reencode);
+    $('#downloadSubmit').val("Working").prop('disabled', true);
+  }
+  else { $("#url").val(""); }
+});
+
+$.fn.clearOutput = function() {
+  setTimeout(() => { this.removeClass('error success').html(''); }, 10000);
+  return this;
+};
+
+function refreshDownloads() {
+  $.get("/system/ajax.php?refresh=downloads", function(e) { $("#downloads").html(e); });
+}
+
+function closeVideo() {
+  $('#closer').hide();
+  $('#mediaPlayer').remove();
+}
+
+function downloadSubmit(url, mp3, gif, reencode) {
+  $("#url").prop("disabled", true);
+  $.post("/system/ajax.php", { download: url, audio: mp3, video: gif, reencode: reencode }, function(e) {
+    var json = jQuery.parseJSON(e);
+    var message = json.status == 2 ? json.message : json.status == 1 ? "Error Downloading Content" : "Download Successful";
+    var className = json.status == 0 ? "success" : "error";
+    $("#output").html(message).addClass(className).clearOutput();
+    if (json.status == 0) {
+      $("#url").val('').prop('disabled', false);
+      refreshDownloads();
+      $(".box.list").animate({ scrollTop: 0 }, "slow");
+    }
+    else { $("#url").prop('disabled', false); }
+  });
+}
+
+function checkUrl() {
+  $.post('/system/ajax.php', { url: $('#url').val() }, function(response) {
+    $('#downloadSubmit').toggle(response === 'true');
+  });
+}
+
+});
+</script>
+</head>
+
+<body>
+
+<div id="help">
+<div class="helpcontainer">
+<div id="helpcloser"><i class="fa-solid fa-xmark"></i></div>
+<h2>How to Use the Downloader</h2>
+<ol>
+<li>Paste the URL to your media in the box.</li>
+<li>Choose the desired format of your output media.
+<ul class="square">
+<li><span class="head">Base Format:</span> The media will download as-is from the content provider. No content length limit.</li>
+<li><span class="head">h264 Re-encode:</span> The video media will be re-encoded into h264 video. This will require more time and may increase the filesize of the output. Content length is limited to 120 minutes.</li>
+<li><span class="head">GIF Re-encode:</span> The video media will be re-encoded into GIF format, discarding the audio portion of the content. Content length is limited to 10 minutes.</li>
+<li><span class="head">MP3 Re-encode:</span> The audio media will be re-encoded into MP3 format, discarding the video portion of the content. No content length limit.</li>
+</ul>
+</li>
+<li>Click Download to begin processing your output media.</li>
+</ol>
+<h2>Tools:</h2>
+<ul>
+<li>Click the title to play downloaded content from the list.</li>
+<li>Click the <i class="fa-solid fa-arrows-rotate"></i> icon to refresh the downloads list.</li>
+<li>Click the <i class="fa-solid fa-trash"></i> icon to delete media from the list.</li>
+<li>Click the <i class="fa-solid fa-floppy-disk"></i> icon to save your downloaded content.</li>
+</ul>
+<h2>Tips:</h2>
+<ul class="dots">
+<li>The downloader supports media from content providers such as Youtube, Vimeo, Facebook, X, Instagram, TikTok, DailyMotion, Twitch, Reddit, SoundCloud, and more.</li>
+<li>H264 encoding is the most mobile device friendly format.</li>
+<li>The smiley face will indicate that the download process is taking place. When completed, your file will appear at the top of the Recent Downloads box.</li>
+<li>D̸O̷N̸'̴T̶ ̷C̴L̸I̵C̶K̵ ̸T̴H̷E̸ S̷̚ͅM̷̲̟̈́͘Ȋ̶̛͙̦L̷̹̯͎̑È̸̬̀͝Y̴͓̫͗ ̴͓͈͗Ḟ̷̨̬̈A̴͈͚̰̾͝͝C̵̙͕̏̒͗Ë̷̢͍́͘ ̶͔̄̍W̶̢̞̆̒̕H̴̗̭͂̕E̷͔͎̮̽̾̕N̸͉̱̆̎ ̴͇͍͝ͅY̴̭̭̪͒͑̏O̴̙̮̖͊̈U̵̬̒'̶̘̽͝Ȑ̴͉̾E̴͖̯͋̑ ̴̦̐̆N̴̰̺̞̈́̓O̶͍̓T̵̫͖̂̏̈́ L̸̛̟̮̟̲͂̈́̂͑͝O̵̟̝͕̗̼̓͛̽͝O̸̧̥̰̤͉͔̔͗͛̈́́̅͌͘Ǩ̷̯̳̪̝͒͠I̴̡̧̨̝̯̹͆ͅN̷͈̹̭̼̞͐̈́̄͊̓̓̚͠͝͝G̶̘̻͍͆̏̔̎ ̶̡͈͍̜̭̓̀ͅA̸̬͖͓̱̓̄͋̎̀̃̀͒͘T̶̯̗͍̖̣̲̲̈́̏̂̈̈́̑̒̀́̋ ̴̬̥̮̗̪͚̪͐̽̏̐͋͂H̶̹͉͇̭͍̯̃̽̈̊͠ͅI̷̡̖̹̱̙̭͒̈͌̐M̸̡̢̛̱͎̞̭͍̣̣͂̉́͗̃̓̏̚͝  H̴̢̛̤̞͈̜͒̈́͋͐̐́̌̏͘͝E̸̛̮̟̒͐̉̃͋͘͘͝͝'̴̨̲̖̣̥̱̥̞̼̖̥͊̋͛̓͛͝ͅS̶͎̺̖̞̈́̾͝ ̸̞͎͖̦̩̱͉̙̱͙͆̍̂͘̕L̷̛̹̦̭͉͕̰̙̭̮̰̝͔̈́͂̿̆́̈̄͛Ŏ̶̘̹̜̈́̊̿̀̃̐O̸̡̢̨͓͓̪͎̼̲̳͉͂K̸̟̖̝͕͉͈̜̳̩͋͆̊ͅͅI̸̗̖̼̗̟̓̍̇̒͑́͌̂̿͜ͅͅN̷͉̱̟̍͐̀̕G̸̦͙̯̳̤̹̣̬̙͓̲̖͇̭̓̓͒͆̐̓̎͠ ̴̤̠̼͓̻̺̊̇́͂̈͂̂̊̊͑͆̂̅̓Ą̶̤̭̜̭̭͉͎̲̓̈́̓̅̀͊̋͜Ţ̶͚̞͇͇̝͉̜̹͇̼̦̤̺̈̓̓̿̑̔́̚͝ ̴̧͇̟̦͉̄̓͑̊̑̃͗͑̔̑̚͝͠Ỵ̵̧̢̧͈̝̣̼̮͔̬̲̈́̉͌̿̈̀͠Ǫ̶̩̻͍͎̭͖̮͎͂̋̌̿̈́́̾U̷͎̯̗̥͋̂̀̀͒!̷̡̢̨̱̳̙̭̘͚̮̜̣̣̇̋̒̆̓̀̿͐̾̽͘͝</li>
+</ul>
+</div>
+</div>
+
+<div id="container">
+
+<img id="loader" src="/system/face.png" />
+
+<div class="box">
+<p class="title">Awesome Media Downloader</p>
+<p class="icons"><i class="fa-brands fa-youtube"></i><i class="fa-brands fa-vimeo"></i><i class="fa-brands fa-facebook"></i><i class="fa-brands fa-x-twitter"></i><i class="fa-brands fa-instagram"></i><i class="fa-brands fa-tiktok"></i><i class="fa-brands fa-dailymotion"></i><i class="fa-brands fa-twitch"></i><i class="fa-brands fa-reddit-alien"></i><i class="fa-brands fa-soundcloud"></i></p>
+<form>
+<div class="flex"><input type="text" id="url" name="url" placeholder="Paste URL Here" /><input type="submit" id="downloadSubmit" name="downloadSubmit" value="Download" /></div>
+<div id="options">
+<i id="helplink" class="link fa-solid fa-circle-question"></i>
+<label class="container" for="none"><span class="label">Base</span><input checked type="checkbox" name="none" id="none" /><span class="checkmark"></span></label>
+<label class="container" for="reencode"><span class="label">H264</span><input type="checkbox" name="reencode" id="reencode" /><span class="checkmark"></span></label>
+<label class="container" for="video"><span class="label">GIF</span><input type="checkbox" name="video" id="video" /><span class="checkmark"></span></label>
+<label class="container" for="audio"><span class="label">MP3</span><input type="checkbox" name="audio" id="audio" /><span class="checkmark"></span></label>
+<p id="output"></p>
+</div>
+</form>
+<div id="player"></div>
+</div>
+
+<div class="box list">
+<span id="reload"><i class="fa-solid fa-arrows-rotate"></i></span>
+<h2>Recent Downloads</h2>
+<ul id="downloads">
+</ul>
+</div>
+
+</div>
+</body>
+
+</html>

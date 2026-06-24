@@ -1,0 +1,21 @@
+# Runtime media and working files
+/download/*
+/temp/*
+/app/download/*
+/app/temp/*
+
+!/download/.gitkeep
+!/temp/.gitkeep
+!/app/download/.gitkeep
+!/app/temp/.gitkeep
+
+# Local/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs and partial downloads
+*.log
+*.part
+*.ytdl
