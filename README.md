@@ -22,10 +22,16 @@ cd AwesomeDownloader
 docker compose up -d --build
 ```
 
-Open the app at:
+Open the app locally at:
 
 ```text
 http://localhost:8080
+```
+
+The current production deployment is published at:
+
+```text
+https://downloader.wabsite.tech
 ```
 
 For a reverse proxy or tunnel setup, publish the container however you normally expose internal HTTP services. The app itself listens on port `80` inside the container.

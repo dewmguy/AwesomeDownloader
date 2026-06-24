@@ -1,0 +1,10 @@
+/.git
+/download/*
+/temp/*
+/app/download/*
+/app/temp/*
+*.log
+*.part
+*.ytdl
+.DS_Store
+Thumbs.db
