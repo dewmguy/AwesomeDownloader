@@ -4,7 +4,7 @@ error_reporting(E_ALL);
 
 define('TEMP_DIR', '/var/www/html/temp');
 define('FINAL_DIR', '/var/www/html/download');
-define('SUPPORTED_EXTENSIONS', ['mp3', 'mp4', 'gif']);
+define('SUPPORTED_EXTENSIONS', ['mp3', 'mp4', 'gif', 'webm']);
 define('ENCODE_EXTENSIONS', ['mov', 'mkv', 'avi', 'flv']);
 define('OUTPUT_TEMPLATE', '%(title).180B [%(id)s].%(ext)s');
 
@@ -31,12 +31,14 @@ function isValidFile($dir, $file, $extensions) {
 }
 
 function formatFileListItem($file) {
-  $escapedFile = htmlspecialchars($file);
+  $escapedFile = htmlspecialchars($file, ENT_QUOTES);
+  $encodedFile = rawurlencode($file);
   return sprintf(
     '<li><a target="_blank" download href="/download/%1$s">' .
     '<i class="link fa-solid fa-floppy-disk"></i></a> ' .
-    '<i data-file="%1$s" class="link delete fa-solid fa-trash"></i>' .
-    '<p class="link play" data-file="%1$s">%1$s</p></li>',
+    '<i data-file="%2$s" class="link delete fa-solid fa-trash"></i>' .
+    '<p class="link play" data-file="%2$s">%2$s</p></li>',
+    $encodedFile,
     $escapedFile
   );
 }

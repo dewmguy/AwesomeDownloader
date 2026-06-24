@@ -105,6 +105,7 @@ $(document).on('click', '.play', function() {
   var closerHTML = '<div id="closer"><i class="fa-solid fa-xmark"></i></div>';
   if (extension === 'mp3') { mediaType = 'audio'; mimeType = mediaType + '/mpeg'; }
   if (extension === 'mp4') { mediaType = 'video'; mimeType = mediaType + '/mp4'; }
+  if (extension === 'webm') { mediaType = 'video'; mimeType = mediaType + '/webm'; }
   playerHTML = '<' + mediaType + ' id="mediaPlayer" controls autoplay>' +
                '<source src="' + filePath + '" type="' + mimeType + '">' +
                'Your browser does not support the ' + mediaType + ' element or this media type is not compatible with the element.' +
