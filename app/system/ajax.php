@@ -58,10 +58,11 @@ function durationToSeconds($duration) {
 }
 
 function getMediaDuration($url) {
-  $command = sprintf("yt-dlp --get-duration %s 2>&1", escapeshellarg($url));
-  exec($command, $output, $retCode);
-  if ($retCode === 0 && !empty($output)) { return durationToSeconds(trim(end($output))); }
+  $result = executeCommand(['yt-dlp', '--get-duration', $url]);
+  $output = array_filter(explode("\n", trim($result['stdout'] ?? '')));
+  if ($result['exitCode'] === 0 && !empty($output)) { return durationToSeconds(trim(end($output))); }
   error_log("Failed to retrieve duration metadata for media: $url");
+  if (!empty($result['stderr'])) error_log($result['stderr']);
   return null;
 }
 
@@ -260,13 +261,13 @@ function createWorkDir($jobId) {
 }
 
 function convertToGif($inputFile, $outputFile) {
-  $command = sprintf(
-    "ffmpeg -i %s -vf \"fps=10,scale=320:-1:flags=lanczos\" -c:v gif %s",
-    escapeshellarg($inputFile),
-    escapeshellarg($outputFile)
-  );
-  exec($command, $output, $retCode);
-  return $retCode === 0;
+  $result = executeCommand([
+    'ffmpeg', '-i', $inputFile,
+    '-vf', 'fps=10,scale=320:-1:flags=lanczos',
+    '-c:v', 'gif',
+    $outputFile
+  ]);
+  return $result['exitCode'] === 0;
 }
 
 function handleGifConversion($tempDir, $finalDir) {
@@ -286,10 +287,16 @@ function handleGifConversion($tempDir, $finalDir) {
 }
 
 function buildYtDlpCommand($url, $isMp3, $workDir) {
-  $urlEscaped = escapeshellarg($url);
-  $outputPath = "-o " . escapeshellarg(OUTPUT_TEMPLATE) . " -P " . escapeshellarg($workDir);
-  $flags = $isMp3 ? "-x --audio-format mp3 --audio-quality 0" : "--merge-output-format mp4";
-  return sprintf("yt-dlp %s --no-mtime %s %s", $flags, $urlEscaped, $outputPath);
+  $command = ['yt-dlp'];
+  if ($isMp3) {
+    array_push($command, '-x', '--audio-format', 'mp3', '--audio-quality', '0');
+  }
+  else {
+    array_push($command, '--merge-output-format', 'mp4');
+  }
+
+  array_push($command, '--no-mtime', $url, '-o', OUTPUT_TEMPLATE, '-P', $workDir);
+  return $command;
 }
 
 function executeCommand($command) {
@@ -307,8 +314,7 @@ function executeCommand($command) {
 function reEncodeFiles($directory) {
   $files = glob($directory . '/*.{mp4,mov,mkv,avi,flv}', GLOB_BRACE);
   foreach ($files as $file) {
-    $filePath = escapeshellarg($file);
-    $codec = getVideoCodec($filePath);
+    $codec = getVideoCodec($file);
 
     if ($codec !== 'h264') {
       if (!reEncodeFile($file, $directory)) {
@@ -323,33 +329,42 @@ function reEncodeFiles($directory) {
 }
 
 function getVideoCodec($file) {
-  $ffprobeCommand = sprintf("ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 %s", $file);
-  exec($ffprobeCommand, $output, $retCode);
+  $result = executeCommand([
+    'ffprobe', '-v', 'error',
+    '-select_streams', 'v:0',
+    '-show_entries', 'stream=codec_name',
+    '-of', 'csv=p=0',
+    $file
+  ]);
+  $output = array_filter(explode("\n", trim($result['stdout'] ?? '')));
 
-  if ($retCode === 0 && isset($output[0])) {
+  if ($result['exitCode'] === 0 && isset($output[0])) {
     return trim($output[0]);
   }
 
   error_log("Unable to determine codec for file: $file");
-  error_log("ffprobe Command: $ffprobeCommand");
+  if (!empty($result['stderr'])) error_log($result['stderr']);
   return null;
 }
 
 function reEncodeFile($file, $directory) {
-  $filePath = escapeshellarg($file);
-  $outputFile = escapeshellarg($directory . '/' . pathinfo($file, PATHINFO_FILENAME) . '_avc.mp4');
+  $outputFile = $directory . '/' . pathinfo($file, PATHINFO_FILENAME) . '_avc.mp4';
+  $result = executeCommand([
+    'ffmpeg', '-i', $file,
+    '-c:v', 'libx264',
+    '-c:a', 'aac',
+    '-strict', 'experimental',
+    $outputFile
+  ]);
 
-  $ffmpegCommand = "ffmpeg -i $filePath -c:v libx264 -c:a aac -strict experimental $outputFile";
-  exec($ffmpegCommand, $output, $retCode);
-
-  if ($retCode === 0) {
+  if ($result['exitCode'] === 0) {
     unlink($file);
     return true;
   }
 
-  error_log("FFmpeg Command: $ffmpegCommand");
-  error_log("FFmpeg Output: " . implode("\n", $output));
-  error_log("Return Code: $retCode");
+  error_log("FFmpeg re-encode failed for file: $file");
+  if (!empty($result['stderr'])) error_log($result['stderr']);
+  error_log("Return Code: " . $result['exitCode']);
   return false;
 }
 
