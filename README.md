@@ -36,6 +36,16 @@ https://downloader.wabsite.tech
 
 For a reverse proxy or tunnel setup, publish the container however you normally expose internal HTTP services. The app itself listens on port `80` inside the container.
 
+## Configuration
+
+The defaults work out of the box, but these environment variables can tune a deployment:
+
+- `DOWNLOADER_TEMP_DIR`: temporary job and work directory, default `/var/www/html/temp`
+- `DOWNLOADER_FINAL_DIR`: completed media directory, default `/var/www/html/download`
+- `DOWNLOADER_GIF_MAX_SECONDS`: maximum GIF source duration, default `600`
+- `DOWNLOADER_REENCODE_MAX_SECONDS`: maximum H264 re-encode source duration, default `7200`
+- `DOWNLOADER_OUTPUT_TEMPLATE`: `yt-dlp` output template, default `%(title).180B [%(id)s].%(ext)s`
+
 ## Data Layout
 
 The compose file keeps runtime data outside the image:

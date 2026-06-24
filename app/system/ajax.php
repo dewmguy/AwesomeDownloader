@@ -2,13 +2,15 @@
 
 error_reporting(E_ALL);
 
-define('TEMP_DIR', '/var/www/html/temp');
-define('FINAL_DIR', '/var/www/html/download');
+define('TEMP_DIR', getenv('DOWNLOADER_TEMP_DIR') ?: '/var/www/html/temp');
+define('FINAL_DIR', getenv('DOWNLOADER_FINAL_DIR') ?: '/var/www/html/download');
 define('JOB_DIR', TEMP_DIR . '/jobs');
 define('WORK_DIR', TEMP_DIR . '/work');
+define('GIF_MAX_SECONDS', (int)(getenv('DOWNLOADER_GIF_MAX_SECONDS') ?: 600));
+define('REENCODE_MAX_SECONDS', (int)(getenv('DOWNLOADER_REENCODE_MAX_SECONDS') ?: 7200));
 define('SUPPORTED_EXTENSIONS', ['mp3', 'mp4', 'gif', 'webm']);
 define('ENCODE_EXTENSIONS', ['mov', 'mkv', 'avi', 'flv']);
-define('OUTPUT_TEMPLATE', '%(title).180B [%(id)s].%(ext)s');
+define('OUTPUT_TEMPLATE', getenv('DOWNLOADER_OUTPUT_TEMPLATE') ?: '%(title).180B [%(id)s].%(ext)s');
 
 function listDownloads() {
   $files = getFilteredFiles(FINAL_DIR, SUPPORTED_EXTENSIONS);
@@ -200,11 +202,11 @@ function processDownload($jobId, $job, $workDir) {
       failJob($jobId, null, "Failed to retrieve media duration.");
       return false;
     }
-    if ($isGif && $duration > 600) {
+    if ($isGif && $duration > GIF_MAX_SECONDS) {
       failJob($jobId, null, "Media is too long for GIF conversion. Maximum allowed is 10 minutes.");
       return false;
     }
-    if ($reEncode && $duration > 7200) {
+    if ($reEncode && $duration > REENCODE_MAX_SECONDS) {
       failJob($jobId, null, "Media is too long for AVC re-encoding. Maximum allowed is 2 hours.");
       return false;
     }

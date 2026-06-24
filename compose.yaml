@@ -6,6 +6,9 @@ services:
     container_name: apache-downloader
     ports:
       - "8080:80"
+    environment:
+      DOWNLOADER_GIF_MAX_SECONDS: 600
+      DOWNLOADER_REENCODE_MAX_SECONDS: 7200
     volumes:
       - ./app:/var/www/html
       - ./temp:/var/www/html/temp
