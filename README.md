@@ -78,6 +78,23 @@ If the container starts but downloads fail, check logs with:
 docker logs apache-downloader --tail 100
 ```
 
+## Existing Host Deployment
+
+On the current production host, the public app lives at `https://downloader.wabsite.tech` and the private compose stack mounts:
+
+- `/opt/html/downloader/app` to `/var/www/html`
+- `/opt/html/downloader/temp` to `/var/www/html/temp`
+- `/opt/html/downloader/download` to `/var/www/html/download`
+
+When syncing files into that layout, preserve or restore Apache-readable permissions:
+
+```bash
+chmod -R u+rwX,g+rwX,o+rX /opt/html/downloader/app
+chmod -R u+rwX,g+rwX,o-rwx /opt/html/downloader/temp /opt/html/downloader/download
+```
+
+The `temp` and `download` directories must remain writable by the container's `www-data` user or group.
+
 ## Current Optimization Plan
 
 The next improvements are focused on reliability and user feedback:
