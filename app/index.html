@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20260903-queue-transcribe" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20260903-fontawesome7" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -166,7 +166,7 @@ $('form').submit(function(event) {
   var items = collectQueueItems();
   if (items === null || items.length === 0) return;
 
-  $('#downloadSubmit').prop('disabled', true).val('Queueing…');
+  $('#downloadSubmit').prop('disabled', true).find('.button-label').text('Queueing…');
   $.post('/system/ajax.php', { queue: JSON.stringify(items) })
     .done(function(response) {
       var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
@@ -186,7 +186,7 @@ $('form').submit(function(event) {
     })
     .fail(function() { showOutput('Unable to reach the download queue.', 'error'); })
     .always(function() {
-      $('#downloadSubmit').val('Queue downloads');
+      $('#downloadSubmit .button-label').text('Queue downloads');
       updateQueueControls();
     });
 });
@@ -378,12 +378,33 @@ function showOutput(message, className) {
 
 <div class="box">
 <p class="title">Awesome Media Downloader</p>
-<p class="icons"><i class="fa-brands fa-youtube"></i><i class="fa-brands fa-vimeo"></i><i class="fa-brands fa-facebook"></i><i class="fa-brands fa-x-twitter"></i><i class="fa-brands fa-instagram"></i><i class="fa-brands fa-tiktok"></i><i class="fa-brands fa-dailymotion"></i><i class="fa-brands fa-twitch"></i><i class="fa-brands fa-reddit-alien"></i><i class="fa-brands fa-soundcloud"></i></p>
+<p class="icons" aria-hidden="true">
+<i class="fa-brands fa-youtube" title="YouTube"></i>
+<i class="fa-brands fa-vimeo" title="Vimeo"></i>
+<i class="fa-brands fa-facebook" title="Facebook"></i>
+<i class="fa-brands fa-x-twitter" title="X"></i>
+<i class="fa-brands fa-instagram" title="Instagram"></i>
+<i class="fa-brands fa-tiktok" title="TikTok"></i>
+<i class="fa-brands fa-dailymotion" title="Dailymotion"></i>
+<i class="fa-brands fa-twitch" title="Twitch"></i>
+<i class="fa-brands fa-reddit-alien" title="Reddit"></i>
+<i class="fa-brands fa-soundcloud" title="SoundCloud"></i>
+<i class="fa-brands fa-bluesky" title="Bluesky"></i>
+<i class="fa-brands fa-bandcamp" title="Bandcamp"></i>
+<i class="fa-brands fa-bilibili" title="Bilibili"></i>
+<i class="fa-brands fa-flickr" title="Flickr"></i>
+<i class="fa-brands fa-pinterest" title="Pinterest"></i>
+<i class="fa-brands fa-tumblr" title="Tumblr"></i>
+<i class="fa-brands fa-mixcloud" title="Mixcloud"></i>
+<i class="fa-brands fa-vk" title="VK"></i>
+<i class="fa-brands fa-snapchat" title="Snapchat"></i>
+<i class="fa-brands fa-linkedin" title="LinkedIn"></i>
+</p>
 <form>
 <div id="queueRows"></div>
 <div id="queueActions">
 <button type="button" id="addUrl"><i class="fa-solid fa-plus"></i> Add another URL</button>
-<input type="submit" id="downloadSubmit" value="Queue downloads" disabled />
+<button type="submit" id="downloadSubmit" disabled><i class="fa-solid fa-list-check"></i> <span class="button-label">Queue downloads</span></button>
 </div>
 <div id="options">
 <i id="helplink" class="link fa-solid fa-circle-question" aria-label="Help"></i>

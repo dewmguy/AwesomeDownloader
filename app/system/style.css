@@ -264,14 +264,16 @@ p.title {
  color: #0A8;
 }
 .icons {
- display: flex;
- justify-content: space-between;
+ display: grid;
+ grid-template-columns: repeat(10, minmax(0, 1fr));
+ gap: .65rem .35rem;
  align-items: center;
  font-size: 1.5rem;
 }
 .icons .fa-brands {
  position: relative;
  font-size: 1.25em;
+ justify-self: center;
 }
 .icons .fa-youtube { color: #F00 }
 .icons .fa-youtube::after {
@@ -352,6 +354,19 @@ p.title {
  z-index: -1;
 }
 .icons .fa-soundcloud { color: #F7520F }
+.icons .fa-bluesky { color: #168AFF }
+.icons .fa-bandcamp { color: #1DA0C3 }
+.icons .fa-bilibili { color: #00AEEC }
+.icons .fa-flickr { color: #FF0084 }
+.icons .fa-pinterest { color: #E60023 }
+.icons .fa-tumblr { color: #7B9EB8 }
+.icons .fa-mixcloud { color: #8B63FF }
+.icons .fa-vk { color: #0077FF }
+.icons .fa-snapchat {
+ color: #FFFC00;
+ text-shadow: 0 0 1px #000;
+}
+.icons .fa-linkedin { color: #0A66C2 }
 
 a, .link { color: #FFF }
 .link { cursor: pointer }
@@ -555,7 +570,12 @@ label.container {
   .list {
     max-height: unset;
   }
-  input[type=submit] { font-size: 0.8em }
+  #downloadSubmit { font-size: 0.8em }
+  .icons {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: .6rem .35rem;
+    font-size: 1.35rem;
+  }
   #loader {
     top: 2em;
     right: 2em;
