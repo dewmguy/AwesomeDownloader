@@ -13,10 +13,35 @@ services:
       DOWNLOADER_PLAYLIST_MAX_ITEMS: 50
       DOWNLOADER_TRANSCRIBER_URL: http://downloader-transcriber:8000
       DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR: /work
+    depends_on:
+      downloader-pot-provider:
+        condition: service_healthy
+      downloader-transcriber:
+        condition: service_healthy
     volumes:
       - ./app:/var/www/html
       - ./temp:/var/www/html/temp
       - ./download:/var/www/html/download
+    restart: unless-stopped
+
+  downloader-pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:1.3.2-deno@sha256:20bd6ad8561d71c628fb3d4fe35a7fcd2c9ef84eecd2bbf40f77dd0d8a8e3799
+    container_name: downloader-pot-provider
+    init: true
+    cpus: 1
+    mem_limit: 512m
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "deno", "eval", "const r = await fetch('http://127.0.0.1:4416/'); if (!r.ok) Deno.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   downloader-transcriber:
@@ -38,4 +63,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
