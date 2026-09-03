@@ -38,5 +38,7 @@ checkFrontend(str_contains($html, "jobCount > 1 ? 'Download queue' : 'Download'"
 checkFrontend(str_contains($html, 'id="copyTranscript"'), 'Transcript playback is missing its copy action.');
 checkFrontend(str_contains($html, 'fa-solid fa-copy'), 'The transcript copy action is missing its Font Awesome icon.');
 checkFrontend(str_contains($html, 'navigator.clipboard.writeText(text)'), 'Transcript copying does not use the Clipboard API.');
+checkFrontend(str_contains($html, '<i class="fa-solid fa-plus"></i> Add URL</button>'), 'The add-URL button label is incorrect.');
+checkFrontend(!str_contains($html, 'Add another URL'), 'The obsolete add-another wording is still present.');
 
 echo "Frontend tests passed.\n";
