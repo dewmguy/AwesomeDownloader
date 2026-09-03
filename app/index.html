@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20260903-fontawesome7" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20260903-queue-polish" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -104,13 +104,21 @@ $(document).on('click', '.play', function() {
   var file = $(this).data('file');
   var extension = file.split('.').pop().toLowerCase();
   var filePath = '/download/' + encodeURIComponent(file);
-  var $closer = $('<div id="closer"><i class="fa-solid fa-xmark"></i></div>');
-  $('#player').empty().append($closer).show();
+  var $closer = $('<button type="button" id="closer" aria-label="Close player" title="Close"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>');
+  var $playerActions = $('<div id="playerActions"></div>');
+  $('#player').empty().append($playerActions.append($closer)).show();
 
   if (extension === 'txt') {
+    var $copy = $('<button type="button" id="copyTranscript" aria-label="Copy transcript" title="Copy transcript" disabled><i class="fa-solid fa-copy" aria-hidden="true"></i><span>Copy</span></button>');
     var $transcript = $('<pre id="transcript">Loading transcript…</pre>');
+    $closer.before($copy);
     $('#player').append($transcript);
-    $.get(filePath).done(function(text) { $transcript.text(text); }).fail(function() { $transcript.text('Unable to load transcript.'); });
+    $.get(filePath).done(function(text) {
+      $transcript.text(text);
+      $copy.prop('disabled', false);
+    }).fail(function() {
+      $transcript.text('Unable to load transcript.');
+    });
     return;
   }
 
@@ -129,6 +137,38 @@ $(document).on('click', '.play', function() {
 
 $(document).on('play', '#mediaPlayer', function() { $('#closer').show(); });
 $(document).on('click', '#closer', closePlayer);
+$(document).on('click', '#copyTranscript', function() {
+  var $button = $(this);
+  var transcript = $('#transcript').text();
+  if ($button.prop('disabled') || transcript === '') return;
+
+  $.when(copyText(transcript)).done(function() {
+    $button.attr('aria-label', 'Transcript copied').find('i').removeClass('fa-copy').addClass('fa-check');
+    $button.find('span').text('Copied');
+    setTimeout(function() {
+      if (!$.contains(document, $button[0])) return;
+      $button.attr('aria-label', 'Copy transcript').find('i').removeClass('fa-check').addClass('fa-copy');
+      $button.find('span').text('Copy');
+    }, 1500);
+  }).fail(function() {
+    showOutput('Unable to copy the transcript.', 'error');
+  });
+});
+
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+
+  var deferred = $.Deferred();
+  var $temporary = $('<textarea class="copy-helper" readonly></textarea>').val(text).appendTo('body');
+  $temporary[0].select();
+  try {
+    if (document.execCommand('copy')) deferred.resolve();
+    else deferred.reject();
+  }
+  catch (error) { deferred.reject(); }
+  $temporary.remove();
+  return deferred.promise();
+}
 
 function closePlayer() {
   var mediaPlayer = $('#mediaPlayer');
@@ -151,10 +191,67 @@ $('#reload').on('click', function() {
 $('#addUrl').on('click', function() { addQueueRow(); });
 
 $('#queueRows').on('click', '.remove-url', function() {
+  if (!confirm('Remove this URL from the download queue?')) return;
   $(this).closest('.queue-row').remove();
   if ($('.queue-row').length === 0) addQueueRow();
   updateQueueControls();
 });
+
+$('#queueRows').on('click', '.queue-mode-button', function(event) {
+  event.stopPropagation();
+  var $picker = $(this).closest('.queue-mode-picker');
+  var shouldOpen = $(this).attr('aria-expanded') !== 'true';
+  closeModeMenus();
+  if (shouldOpen) openModeMenu($picker);
+});
+
+$('#queueRows').on('click', '.queue-mode-option', function(event) {
+  event.stopPropagation();
+  var $option = $(this);
+  var $picker = $option.closest('.queue-mode-picker');
+  var mode = $option.data('mode');
+  $picker.find('.queue-mode').val(mode).trigger('change');
+  $picker.find('.queue-mode-label').text($option.text());
+  $picker.find('.queue-mode-button').attr('aria-label', 'Download method: ' + $option.text());
+  $picker.find('.queue-mode-option').attr('aria-selected', 'false');
+  $option.attr('aria-selected', 'true');
+  closeModeMenus();
+  $picker.find('.queue-mode-button').focus();
+});
+
+$('#queueRows').on('keydown', '.queue-mode-button', function(event) {
+  if (event.key === 'Escape') {
+    closeModeMenus();
+    return;
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  event.preventDefault();
+  var $picker = $(this).closest('.queue-mode-picker');
+  openModeMenu($picker);
+  var $options = $picker.find('.queue-mode-option');
+  var $selected = $options.filter('[aria-selected="true"]');
+  if (event.key === 'ArrowUp') ($selected.prev().length ? $selected.prev() : $options.last()).focus();
+  else ($selected.next().length ? $selected.next() : $options.first()).focus();
+});
+
+$('#queueRows').on('keydown', '.queue-mode-option', function(event) {
+  var $options = $(this).closest('.queue-mode-menu').find('.queue-mode-option');
+  var index = $options.index(this);
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    $options.eq((index + (event.key === 'ArrowDown' ? 1 : -1) + $options.length) % $options.length).focus();
+  }
+  else if (event.key === 'Escape') {
+    event.preventDefault();
+    var $picker = $(this).closest('.queue-mode-picker');
+    closeModeMenus();
+    $picker.find('.queue-mode-button').focus();
+  }
+});
+
+$(document).on('click', closeModeMenus);
+$(window).on('resize scroll', closeModeMenus);
+$('#queueRows').on('scroll', closeModeMenus);
 
 $('#queueRows').on('input change', '.queue-url, .queue-mode', function() {
   if ($(this).hasClass('queue-url')) $(this).removeClass('brokenurl');
@@ -166,7 +263,8 @@ $('form').submit(function(event) {
   var items = collectQueueItems();
   if (items === null || items.length === 0) return;
 
-  $('#downloadSubmit').prop('disabled', true).find('.button-label').text('Queueing…');
+  var isQueue = items.length > 1;
+  $('#downloadSubmit').data('submitting', true).prop('disabled', true).find('.button-label').text(isQueue ? 'Queueing downloads…' : 'Starting download…');
   $.post('/system/ajax.php', { queue: JSON.stringify(items) })
     .done(function(response) {
       var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
@@ -186,7 +284,7 @@ $('form').submit(function(event) {
     })
     .fail(function() { showOutput('Unable to reach the download queue.', 'error'); })
     .always(function() {
-      $('#downloadSubmit .button-label').text('Queue downloads');
+      $('#downloadSubmit').removeData('submitting');
       updateQueueControls();
     });
 });
@@ -196,19 +294,53 @@ function addQueueRow(url, mode) {
   queueRowCounter++;
   var $row = $('<div class="queue-row"></div>');
   var $url = $('<input type="text" class="queue-url" inputmode="url" autocomplete="off" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL">').val(url || '');
-  var $mode = $('<select class="queue-mode" aria-label="Download choice"></select>');
-  [
+  var selectedMode = mode || 'base';
+  var menuId = 'queueModeMenu' + queueRowCounter;
+  var $mode = $('<input type="hidden" class="queue-mode">');
+  var $modePicker = $('<div class="queue-mode-picker"></div>');
+  var $modeButton = $('<button type="button" class="queue-mode-button" aria-haspopup="listbox" aria-expanded="false"></button>').attr('aria-controls', menuId);
+  var $modeMenu = $('<div class="queue-mode-menu" role="listbox" aria-label="Download method options"></div>').attr('id', menuId);
+  var choices = [
     ['base', 'Base'],
     ['h264', 'H264'],
     ['gif', 'GIF'],
     ['mp3', 'MP3'],
     ['transcribe', 'Transcribe']
-  ].forEach(function(option) { $mode.append($('<option></option>').val(option[0]).text(option[1])); });
-  $mode.val(mode || 'base');
-  var $remove = $('<button type="button" class="remove-url" aria-label="Remove URL"><i class="fa-solid fa-xmark"></i></button>');
-  $row.append($url, $mode, $remove);
+  ];
+  if (!choices.some(function(choice) { return choice[0] === selectedMode; })) selectedMode = 'base';
+  choices.forEach(function(choice) {
+    $modeMenu.append($('<button type="button" class="queue-mode-option" role="option"></button>')
+      .attr('aria-selected', choice[0] === selectedMode ? 'true' : 'false')
+      .data('mode', choice[0]).text(choice[1]));
+  });
+  var selectedLabel = choices.filter(function(choice) { return choice[0] === selectedMode; })[0];
+  $mode.val(selectedMode);
+  $modeButton.attr('aria-label', 'Download method: ' + selectedLabel[1]);
+  $modeButton.append($('<span class="queue-mode-label"></span>').text(selectedLabel[1]), '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i>');
+  $modePicker.append($mode, $modeButton, $modeMenu);
+  var $remove = $('<button type="button" class="remove-url" aria-label="Remove URL from queue" title="Remove from queue"><i class="fa-solid fa-trash-can" aria-hidden="true"></i></button>');
+  $row.append($url, $modePicker, $remove);
   $('#queueRows').append($row);
   updateQueueControls();
+}
+
+function openModeMenu($picker) {
+  closeModeMenus();
+  var $button = $picker.find('.queue-mode-button');
+  var $menu = $picker.find('.queue-mode-menu');
+  var rectangle = $button[0].getBoundingClientRect();
+  $button.attr('aria-expanded', 'true');
+  $picker.addClass('open');
+  $menu.css({ left: rectangle.left, top: rectangle.bottom + 4, width: rectangle.width }).show();
+  var menuHeight = $menu.outerHeight();
+  if (rectangle.bottom + menuHeight + 12 > window.innerHeight) {
+    $menu.css('top', Math.max(8, rectangle.top - menuHeight - 4));
+  }
+}
+
+function closeModeMenus() {
+  $('.queue-mode-picker.open').removeClass('open').find('.queue-mode-button').attr('aria-expanded', 'false');
+  $('.queue-mode-menu').hide();
 }
 
 function resetQueueRows() {
@@ -250,11 +382,20 @@ function isWebUrl(value) {
 }
 
 function updateQueueControls() {
-  var hasValue = false;
-  $('.queue-url').each(function() { if ($(this).val().trim() !== '') hasValue = true; });
-  $('#downloadSubmit').prop('disabled', !hasValue);
-  $('#addUrl').prop('disabled', $('.queue-row').length >= maxQueueRows);
-  $('.remove-url').toggle($('.queue-row').length > 1);
+  var jobCount = 0;
+  $('.queue-url').each(function() { if ($(this).val().trim() !== '') jobCount++; });
+  var rowCount = $('.queue-row').length;
+  var hasRemoveButtons = rowCount > 1;
+  var $submit = $('#downloadSubmit');
+  var isSubmitting = $submit.data('submitting') === true;
+  $submit.prop('disabled', isSubmitting || jobCount === 0);
+  if (!isSubmitting) {
+    $submit.find('.button-label').text(jobCount > 1 ? 'Download queue' : 'Download');
+    $submit.find('i').toggleClass('fa-list-check', jobCount > 1).toggleClass('fa-download', jobCount <= 1);
+  }
+  $('#addUrl').prop('disabled', rowCount >= maxQueueRows);
+  $('.remove-url').toggle(hasRemoveButtons);
+  $('.queue-row').toggleClass('queue-row-single', !hasRemoveButtons);
 }
 
 function describeUrl(value) {
@@ -354,7 +495,7 @@ function showOutput(message, className) {
 <li><span class="head">Transcribe:</span> Create timestamped written transcripts with a local Whisper model.</li>
 </ul>
 </li>
-<li>Use <span class="head">Add another URL</span> to give each item its own output choice, then click Queue downloads.</li>
+<li>Use <span class="head">Add another URL</span> to give each item its own output choice, then click Download or Download queue.</li>
 </ol>
 <h2>Tools:</h2>
 <ul>
@@ -404,7 +545,7 @@ function showOutput(message, className) {
 <div id="queueRows"></div>
 <div id="queueActions">
 <button type="button" id="addUrl"><i class="fa-solid fa-plus"></i> Add another URL</button>
-<button type="submit" id="downloadSubmit" disabled><i class="fa-solid fa-list-check"></i> <span class="button-label">Queue downloads</span></button>
+<button type="submit" id="downloadSubmit" disabled><i class="fa-solid fa-download" aria-hidden="true"></i> <span class="button-label">Download</span></button>
 </div>
 <div id="options">
 <i id="helplink" class="link fa-solid fa-circle-question" aria-label="Help"></i>

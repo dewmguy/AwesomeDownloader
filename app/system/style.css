@@ -106,13 +106,77 @@ form {
   grid-template-columns: minmax(0, 1fr) 8rem 2.75rem;
   gap: .5rem;
 }
+.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 8rem }
 #queueActions {
   display: flex;
   justify-content: space-between;
   gap: .75rem;
 }
 #queueActions > * { flex: 1 }
-.remove-url { padding: 0 }
+.remove-url {
+  padding: 0;
+  transition: background .15s ease, color .15s ease;
+}
+.remove-url:hover, .remove-url:focus-visible {
+  background: #C33;
+  color: #FFF;
+}
+.queue-mode-picker { position: relative }
+.queue-mode-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  width: 100%;
+  height: 100%;
+  border: 2px solid rgba(255,255,255,.25);
+  padding: 10px;
+  background: rgba(50,50,50,.75);
+  color: #FFF;
+  font-family: "SFMedium", sans-serif;
+  font-size: 1rem;
+  text-align: left;
+}
+.queue-mode-button:hover, .queue-mode-button:focus-visible, .queue-mode-picker.open .queue-mode-button {
+  border-color: #0A8;
+  background: rgba(50,50,50,.9);
+  color: #FFF;
+}
+.queue-mode-button i {
+  font-size: .8rem;
+  transition: transform .15s ease;
+}
+.queue-mode-picker.open .queue-mode-button i { transform: rotate(180deg) }
+.queue-mode-menu {
+  position: fixed;
+  display: none;
+  z-index: 20;
+  border: 2px solid #0A8;
+  padding: .3rem;
+  background: #1B1B1B;
+  box-shadow: 0 .75rem 2rem rgba(0,0,0,.55);
+}
+.queue-mode-option {
+  display: block;
+  width: 100%;
+  padding: .55rem .7rem;
+  background: transparent;
+  color: #FFF;
+  font-family: "SFMedium", sans-serif;
+  font-size: 1rem;
+  text-align: left;
+}
+.queue-mode-option:hover, .queue-mode-option:focus-visible {
+  background: #0A8;
+  color: #111;
+}
+.queue-mode-option[aria-selected="true"] {
+  color: #5FC;
+  font-family: "SFBold", sans-serif;
+}
+.queue-mode-option[aria-selected="true"]:hover, .queue-mode-option[aria-selected="true"]:focus-visible {
+  color: #111;
+}
 .queue-hint {
   color: rgba(255,255,255,.8);
   font-family: "SFLight";
@@ -155,22 +219,48 @@ h2 {
 
 #helplink { font-size: 2rem }
 
-#closer, #helpcloser {
+#playerActions {
  position: absolute;
  top: -2rem;
  right: 0;
  display: flex;
+ height: 2rem;
+ z-index: 2;
+}
+#closer, #copyTranscript, #helpcloser {
+ display: flex;
  justify-content: center;
  align-items: center;
  height: 2rem;
- width: 2rem;
  background: #0A8;
  color: #000;
  cursor: pointer;
+}
+#closer {
+ position: static;
+ width: 2rem;
+ padding: 0;
+}
+#copyTranscript {
+ position: static;
+ gap: .4rem;
+ width: auto;
+ padding: 0 .7rem;
+ font-size: .9rem;
+}
+#copyTranscript i, #copyTranscript span { font-size: .9rem }
+#copyTranscript:disabled, #copyTranscript:disabled:hover {
+ background: #0A8;
+ color: #222;
+}
+#helpcloser {
+ position: absolute;
+ top: -2px;
+ right: 0;
+ width: 2rem;
  z-index: 2;
 }
-#helpcloser { top: -2px }
-#closer:hover, #helpcloser:hover { color: #FFF }
+#closer:hover, #closer:focus-visible, #copyTranscript:hover, #copyTranscript:focus-visible, #helpcloser:hover { color: #FFF }
 
 #output {
   font-size: 1rem;
@@ -240,6 +330,12 @@ h2 {
   color: #FFF;
   font: 1rem/1.5rem "SFRegular";
   white-space: pre-wrap;
+}
+.copy-helper {
+  position: fixed;
+  top: 0;
+  left: -9999px;
+  opacity: 0;
 }
 
 .box.list, audio, video, input[type=text] { box-shadow: 0 0 50px rgba(0,0,0,.5) }
@@ -404,7 +500,7 @@ ol.nobullet li, ul.nobullet li {
 }
 li::marker { color: #5FC }
 
-input[type=text], select {
+input[type=text] {
   display: inline-block;
   border: 2px solid rgba(255,255,255,.25);
   padding: 10px;
@@ -413,9 +509,7 @@ input[type=text], select {
   font-family: "SFMedium";
   width: 100%;
 }
-select { cursor: pointer }
-select option { background: #222; color: #FFF }
-input[type=text]:focus, input[type=text]:hover, input[type=text]:not(:placeholder-shown), select:focus, select:hover { border: 2px solid #0A8 }
+input[type=text]:focus, input[type=text]:hover, input[type=text]:not(:placeholder-shown) { border: 2px solid #0A8 }
 input[type=text].brokenurl { border-color: #C44 }
 
 input[type=submit], button {
@@ -564,6 +658,7 @@ label.container {
   #helpcloser { left: unset; right: 0; position: fixed }
   .box { padding: 2rem }
   .queue-row { grid-template-columns: minmax(0, 1fr) 7rem 2.5rem }
+  .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 7rem }
   #queueActions { flex-direction: column }
   .queue-status { grid-template-columns: 4.5rem minmax(0, 1fr) }
   .queue-status-message { grid-column: 1 / -1; padding-left: 5rem }
