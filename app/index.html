@@ -390,7 +390,7 @@ function updateQueueControls() {
   var isSubmitting = $submit.data('submitting') === true;
   $submit.prop('disabled', isSubmitting || jobCount === 0);
   if (!isSubmitting) {
-    $submit.find('.button-label').text(jobCount > 1 ? 'Download queue' : 'Download');
+    $submit.find('.button-label').text(jobCount > 1 ? 'Download Queue' : 'Download');
     $submit.find('i').toggleClass('fa-list-check', jobCount > 1).toggleClass('fa-download', jobCount <= 1);
   }
   $('#addUrl').prop('disabled', rowCount >= maxQueueRows);
@@ -484,6 +484,7 @@ function showOutput(message, className) {
 <div class="helpcontainer">
 <div id="helpcloser"><i class="fa-solid fa-xmark"></i></div>
 <h2>How to Use the Downloader</h2>
+<p>Each URL can use a different format, and playlist links are supported.</p>
 <ol>
 <li>Paste a media URL or playlist URL into a queue row.</li>
 <li>Choose that URL's output:
@@ -495,7 +496,7 @@ function showOutput(message, className) {
 <li><span class="head">Transcribe:</span> Create timestamped written transcripts with a local Whisper model.</li>
 </ul>
 </li>
-<li>Use <span class="head">Add URL</span> to give each item its own output choice, then click Download or Download queue.</li>
+<li>Use <span class="head">Add URL</span> to give each item its own output choice, then click Download or Download Queue.</li>
 </ol>
 <h2>Tools:</h2>
 <ul>
@@ -549,7 +550,6 @@ function showOutput(message, className) {
 </div>
 <div id="options">
 <i id="helplink" class="link fa-solid fa-circle-question" aria-label="Help"></i>
-<span class="queue-hint">Each URL can use a different format. Playlist links are supported.</span>
 </div>
 <p id="output" aria-live="polite"></p>
 </form>

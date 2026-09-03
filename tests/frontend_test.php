@@ -34,11 +34,13 @@ checkFrontend(str_contains($html, "confirm('Remove this URL from the download qu
 checkFrontend(str_contains($html, 'fa-solid fa-trash-can'), 'Queue removal is missing its Font Awesome trash icon.');
 checkFrontend(str_contains($css, '.remove-url:hover, .remove-url:focus-visible'), 'Queue removal is missing its hover treatment.');
 checkFrontend(str_contains($css, 'background: #C33;'), 'Queue removal does not turn red on hover.');
-checkFrontend(str_contains($html, "jobCount > 1 ? 'Download queue' : 'Download'"), 'The download action label is not job-count aware.');
+checkFrontend(str_contains($html, "jobCount > 1 ? 'Download Queue' : 'Download'"), 'The download action label is not job-count aware.');
 checkFrontend(str_contains($html, 'id="copyTranscript"'), 'Transcript playback is missing its copy action.');
 checkFrontend(str_contains($html, 'fa-solid fa-copy'), 'The transcript copy action is missing its Font Awesome icon.');
 checkFrontend(str_contains($html, 'navigator.clipboard.writeText(text)'), 'Transcript copying does not use the Clipboard API.');
 checkFrontend(str_contains($html, '<i class="fa-solid fa-plus"></i> Add URL</button>'), 'The add-URL button label is incorrect.');
 checkFrontend(!str_contains($html, 'Add another URL'), 'The obsolete add-another wording is still present.');
+checkFrontend(!str_contains($html, '<span class="queue-hint">'), 'The format and playlist hint is still visible in the main form.');
+checkFrontend(str_contains($html, '<p>Each URL can use a different format, and playlist links are supported.</p>'), 'The format and playlist guidance is missing from Help.');
 
 echo "Frontend tests passed.\n";

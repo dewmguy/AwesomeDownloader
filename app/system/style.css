@@ -177,12 +177,6 @@ form {
 .queue-mode-option[aria-selected="true"]:hover, .queue-mode-option[aria-selected="true"]:focus-visible {
   color: #111;
 }
-.queue-hint {
-  color: rgba(255,255,255,.8);
-  font-family: "SFLight";
-  line-height: 1.25rem;
-}
-
 h2 {
  color: #FFF;
  font-family: "SFBold";
