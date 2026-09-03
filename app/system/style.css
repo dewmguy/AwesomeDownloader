@@ -79,10 +79,12 @@ body {
   gap: 1rem;
   width: 40vw;
   min-width: 50ch;
+  max-height: 90vh;
   border: 2px solid #0A8;
   padding: 2rem;
   background: rgba(0,0,0,.3);
   backdrop-filter: saturate(65%) blur(15px);
+  overflow-y: auto;
   z-index: 4;
 }
 
@@ -108,11 +110,10 @@ form {
 }
 .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 8rem }
 #queueActions {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 2.75rem;
   gap: .75rem;
 }
-#queueActions > * { flex: 1 }
 .remove-url {
   padding: 0;
   transition: background .15s ease, color .15s ease;
@@ -204,14 +205,16 @@ h2 {
 }
 #reload i { font-size: 1.5rem }
 
-#options {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
+#helplink {
+  padding: 0;
+  background: transparent;
+  color: #FFF;
 }
-
-#helplink { font-size: 2rem }
+#helplink i { font-size: 2rem }
+#helplink:hover, #helplink:focus-visible {
+  background: transparent;
+  color: #0A8;
+}
 
 #playerActions {
  position: absolute;
@@ -364,6 +367,7 @@ p.title {
  position: relative;
  font-size: 1.25em;
  justify-self: center;
+ isolation: isolate;
 }
 .icons .fa-youtube { color: #F00 }
 .icons .fa-youtube::after {
@@ -653,7 +657,6 @@ label.container {
   .box { padding: 2rem }
   .queue-row { grid-template-columns: minmax(0, 1fr) 7rem 2.5rem }
   .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 7rem }
-  #queueActions { flex-direction: column }
   .queue-status { grid-template-columns: 4.5rem minmax(0, 1fr) }
   .queue-status-message { grid-column: 1 / -1; padding-left: 5rem }
   .list {

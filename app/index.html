@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20260903-queue-polish" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20260903-help-dialog" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -484,42 +484,21 @@ function showOutput(message, className) {
 <div class="helpcontainer">
 <div id="helpcloser"><i class="fa-solid fa-xmark"></i></div>
 <h2>How to Use the Downloader</h2>
-<p>Each URL can use a different format, and playlist links are supported.</p>
 <ol>
-<li>Paste a media URL or playlist URL into a queue row.</li>
-<li>Choose that URL's output:
-<ul class="square">
-<li><span class="head">Base:</span> Download the original media. Playlists are supported.</li>
-<li><span class="head">H264:</span> Re-encode videos for broad device compatibility. Each video is limited to 120 minutes.</li>
-<li><span class="head">GIF:</span> Create silent GIFs. Each video is limited to 10 minutes.</li>
-<li><span class="head">MP3:</span> Extract audio from videos or playlists.</li>
-<li><span class="head">Transcribe:</span> Create timestamped written transcripts with a local Whisper model.</li>
-</ul>
-</li>
-<li>Use <span class="head">Add URL</span> to give each item its own output choice, then click Download or Download Queue.</li>
+<li>Paste a media or playlist URL.</li>
+<li>Choose a download method.</li>
+<li>Use <span class="head">Add URL</span> for more jobs. Each URL can use a different method.</li>
+<li>Click <span class="head">Download</span> for one job or <span class="head">Download Queue</span> for several.</li>
 </ol>
-<h2>Tools:</h2>
-<ul>
-<li>Click a media title to play it or a transcript title to read it.</li>
-<li>Click the <i class="fa-solid fa-arrows-rotate"></i> icon to refresh the downloads list.</li>
-<li>Click the <i class="fa-solid fa-trash"></i> icon to delete a completed file.</li>
-<li>Click the <i class="fa-solid fa-floppy-disk"></i> icon to save a completed file.</li>
-</ul>
-<h2>Tips:</h2>
+<h2>Download Methods</h2>
 <ul class="dots">
-<li>The downloader supports YouTube, Vimeo, Facebook, X, Instagram, TikTok, DailyMotion, Twitch, Reddit, SoundCloud, and many other providers supported by yt-dlp.</li>
-<li>Playlist items are numbered and processed in order. Up to 50 items are accepted from one playlist.</li>
-<li>Transcription runs on this server's CPU, so long videos may take a few minutes.</li>
-<li>D̸O̷N̸'̴T̶ ̷C̴L̸I̵C̶K̵ ̸T̴H̷E̸ S̷̚ͅM̷̲̟̈́͘Ȋ̶̛͙̦L̷̹̯͎̑È̸̬̀͝Y̴͓̫͗ ̴͓͈͗Ḟ̷̨̬̈A̴͈͚̰̾͝͝C̵̙͕̏̒͗Ë̷̢͍́͘ ̶͔̄̍W̶̢̞̆̒̕H̴̗̭͂̕E̷͔͎̮̽̾̕N̸͉̱̆̎ ̴͇͍͝ͅY̴̭̭̪͒͑̏O̴̙̮̖͊̈U̵̬̒'̶̘̽͝Ȑ̴͉̾E̴͖̯͋̑ ̴̦̐̆N̴̰̺̞̈́̓O̶͍̓T̵̫͖̂̏̈́ L̸̛̟̮̟̲͂̈́̂͑͝O̵̟̝͕̗̼̓͛̽͝O̸̧̥̰̤͉͔̔͗͛̈́́̅͌͘Ǩ̷̯̳̪̝͒͠I̴̡̧̨̝̯̹͆ͅN̷͈̹̭̼̞͐̈́̄͊̓̓̚͠͝͝G̶̘̻͍͆̏̔̎ ̶̡͈͍̜̭̓̀ͅA̸̬͖͓̱̓̄͋̎̀̃̀͒͘T̶̯̗͍̖̣̲̲̈́̏̂̈̈́̑̒̀́̋ ̴̬̥̮̗̪͚̪͐̽̏̐͋͂H̶̹͉͇̭͍̯̃̽̈̊͠ͅI̷̡̖̹̱̙̭͒̈͌̐M̸̡̢̛̱͎̞̭͍̣̣͂̉́͗̃̓̏̚͝.</li>
+<li><span class="head">Base:</span> Download the original media.</li>
+<li><span class="head">H264:</span> Create a broadly compatible video, up to 120 minutes.</li>
+<li><span class="head">GIF:</span> Create a silent GIF, up to 10 minutes.</li>
+<li><span class="head">MP3:</span> Extract the audio.</li>
+<li><span class="head">Transcribe:</span> Create a timestamped written transcript with local Whisper.</li>
 </ul>
-</div>
-</div>
-
-<div id="container">
-<img id="loader" src="/system/face.png" alt="Download activity" />
-
-<div class="box">
-<p class="title">Awesome Media Downloader</p>
+<h2>Supported Sites</h2>
 <p class="icons" aria-hidden="true">
 <i class="fa-brands fa-youtube" title="YouTube"></i>
 <i class="fa-brands fa-vimeo" title="Vimeo"></i>
@@ -542,14 +521,32 @@ function showOutput(message, className) {
 <i class="fa-brands fa-snapchat" title="Snapchat"></i>
 <i class="fa-brands fa-linkedin" title="LinkedIn"></i>
 </p>
+<p>These services—and many others supported by yt-dlp—work with media and playlist links. Playlists are limited to 50 items and run in order.</p>
+<h2>Completed Downloads</h2>
+<ul class="dots">
+<li>Select a title to preview media or read a transcript.</li>
+<li>Use <i class="fa-solid fa-copy"></i> to copy a complete transcript.</li>
+<li>Use <i class="fa-solid fa-floppy-disk"></i> to save, <i class="fa-solid fa-trash"></i> to delete, or <i class="fa-solid fa-arrows-rotate"></i> to refresh.</li>
+<li>Transcription runs on this server's CPU, so long videos may take a few minutes.</li>
+</ul>
+<h2>Tips:</h2>
+<ul class="dots">
+<li>D̸O̷N̸'̴T̶ ̷C̴L̸I̵C̶K̵ ̸T̴H̷E̸ S̷̚ͅM̷̲̟̈́͘Ȋ̶̛͙̦L̷̹̯͎̑È̸̬̀͝Y̴͓̫͗ ̴͓͈͗Ḟ̷̨̬̈A̴͈͚̰̾͝͝C̵̙͕̏̒͗Ë̷̢͍́͘ ̶͔̄̍W̶̢̞̆̒̕H̴̗̭͂̕E̷͔͎̮̽̾̕N̸͉̱̆̎ ̴͇͍͝ͅY̴̭̭̪͒͑̏O̴̙̮̖͊̈U̵̬̒'̶̘̽͝Ȑ̴͉̾E̴͖̯͋̑ ̴̦̐̆N̴̰̺̞̈́̓O̶͍̓T̵̫͖̂̏̈́ L̸̛̟̮̟̲͂̈́̂͑͝O̵̟̝͕̗̼̓͛̽͝O̸̧̥̰̤͉͔̔͗͛̈́́̅͌͘Ǩ̷̯̳̪̝͒͠I̴̡̧̨̝̯̹͆ͅN̷͈̹̭̼̞͐̈́̄͊̓̓̚͠͝͝G̶̘̻͍͆̏̔̎ ̶̡͈͍̜̭̓̀ͅA̸̬͖͓̱̓̄͋̎̀̃̀͒͘T̶̯̗͍̖̣̲̲̈́̏̂̈̈́̑̒̀́̋ ̴̬̥̮̗̪͚̪͐̽̏̐͋͂H̶̹͉͇̭͍̯̃̽̈̊͠ͅI̷̡̖̹̱̙̭͒̈͌̐M̸̡̢̛̱͎̞̭͍̣̣͂̉́͗̃̓̏̚͝.</li>
+</ul>
+</div>
+</div>
+
+<div id="container">
+<img id="loader" src="/system/face.png" alt="Download activity" />
+
+<div class="box">
+<p class="title">Awesome Media Downloader</p>
 <form>
 <div id="queueRows"></div>
 <div id="queueActions">
 <button type="button" id="addUrl"><i class="fa-solid fa-plus"></i> Add URL</button>
 <button type="submit" id="downloadSubmit" disabled><i class="fa-solid fa-download" aria-hidden="true"></i> <span class="button-label">Download</span></button>
-</div>
-<div id="options">
-<i id="helplink" class="link fa-solid fa-circle-question" aria-label="Help"></i>
+<button type="button" id="helplink" aria-label="Help" title="Help"><i class="fa-solid fa-circle-question" aria-hidden="true"></i></button>
 </div>
 <p id="output" aria-live="polite"></p>
 </form>
