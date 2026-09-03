@@ -37,7 +37,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "deno", "eval", "const r = await fetch('http://127.0.0.1:4416/'); if (!r.ok) Deno.exit(1)"]
+      test: ["CMD", "deno", "eval", "--allow-net=127.0.0.1:4416", "const r = await fetch('http://127.0.0.1:4416/ping'); if (!r.ok) Deno.exit(1)"]
       interval: 15s
       timeout: 5s
       retries: 3
