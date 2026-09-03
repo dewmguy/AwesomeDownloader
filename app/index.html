@@ -16,7 +16,7 @@
 <link rel="apple-touch-icon" sizes="144x144" href="/system/favicon/apple-icon-144x144.png" />
 <link rel="apple-touch-icon" sizes="152x152" href="/system/favicon/apple-icon-152x152.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/system/favicon/apple-icon-180x180.png" />
-<link rel="icon" type="image/png" sizes="192x192"  href="/system/favicon/android-icon-192x192.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="/system/favicon/android-icon-192x192.png" />
 <link rel="icon" type="image/png" sizes="32x32" href="/system/favicon/favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="96x96" href="/system/favicon/favicon-96x96.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="/system/favicon/favicon-16x16.png" />
@@ -33,13 +33,17 @@ var ajaxInProgress = false;
 var previousAngle = null;
 var watchfulEye = false;
 var jobInProgress = false;
-var activeJobId = null;
+var activeJobs = {};
+var jobPollRequest = null;
+var jobPollTimer = null;
+var queueRowCounter = 0;
+var maxQueueRows = 20;
 
 refreshDownloads();
-$("#help,#player,#downloadSubmit").hide();
-$('#loader').on('click', function() { watchfulEye = watchfulEye ? false : true; });
-$('#url').on('keyup', checkUrl);
-checkUrl();
+$("#help,#player,#activeQueue").hide();
+addQueueRow();
+
+$('#loader').on('click', function() { watchfulEye = !watchfulEye; });
 
 $(document).on('click', '.delete', function() {
   var fileName = $(this).data('file');
@@ -47,13 +51,13 @@ $(document).on('click', '.delete', function() {
     $.ajax({
       url: '/system/ajax.php',
       type: 'POST',
-      data: { 'file': fileName },
+      data: { file: fileName },
       success: function(response) {
         if (response === 'true') {
           refreshDownloads();
-          $("#output").html("File Deleted").addClass("success").clearOutput();
+          showOutput('File deleted.', 'success');
         }
-        else { $("#output").html("Error Deleting File").addClass("error").clearOutput(); }
+        else showOutput('Error deleting file.', 'error');
       }
     });
   }
@@ -61,30 +65,27 @@ $(document).on('click', '.delete', function() {
 
 $(document).ajaxStart(function() {
   ajaxInProgress = true;
-  $("#loader").addClass('spinbow');
+  $('#loader').addClass('spinbow');
 }).ajaxStop(function() {
   ajaxInProgress = false;
-  if (!jobInProgress) {
-    $("#loader").removeClass('spinbow');
-    $('#downloadSubmit').val("Download").prop('disabled', false);
-  }
+  if (!jobInProgress) $('#loader').removeClass('spinbow');
 });
 
 $(document).mousemove(function(event) {
   var radius = 1000;
   var adjust = 45;
-  if(!ajaxInProgress && watchfulEye) {
+  if (!ajaxInProgress && watchfulEye) {
     var $loader = $('#loader');
     var loaderOffset = $loader.offset();
     var loaderCenterX = loaderOffset.left + $loader.width() / 2;
     var loaderCenterY = loaderOffset.top + $loader.height() / 2;
     var distance = Math.sqrt(Math.pow(event.pageX - loaderCenterX, 2) + Math.pow(event.pageY - loaderCenterY, 2));
-    if(distance < radius) {
+    if (distance < radius) {
       var angle = Math.atan2(event.pageY - loaderCenterY, event.pageX - loaderCenterX) * 180 / Math.PI + adjust;
-      if(previousAngle != null) {
+      if (previousAngle !== null) {
         var delta = angle - previousAngle;
-        if(delta > 180) angle -= 360;
-        else if(delta < -180) angle += 360;
+        if (delta > 180) angle -= 360;
+        else if (delta < -180) angle += 360;
       }
       $loader.css('transform', 'rotate(' + angle + 'deg)');
       previousAngle = angle;
@@ -97,157 +98,239 @@ $(document).mousemove(function(event) {
 });
 
 $(document).on('click', '.play', function() {
-  $("html, body").animate({ scrollTop: 0 }, "slow");
+  $('html, body').animate({ scrollTop: 0 }, 'slow');
   $('.play').removeClass('clicked');
-  $(this).addClass("clicked");
+  $(this).addClass('clicked');
   var file = $(this).data('file');
   var extension = file.split('.').pop().toLowerCase();
-  var filePath = '/download/' + file;
-  var playerHTML = '';
-  var mediaType = '';
-  var mimeType = '';
-  var closerHTML = '<div id="closer"><i class="fa-solid fa-xmark"></i></div>';
-  if (extension === 'mp3') { mediaType = 'audio'; mimeType = mediaType + '/mpeg'; }
-  if (extension === 'mp4') { mediaType = 'video'; mimeType = mediaType + '/mp4'; }
-  if (extension === 'webm') { mediaType = 'video'; mimeType = mediaType + '/webm'; }
-  playerHTML = '<' + mediaType + ' id="mediaPlayer" controls autoplay>' +
-               '<source src="' + filePath + '" type="' + mimeType + '">' +
-               'Your browser does not support the ' + mediaType + ' element or this media type is not compatible with the element.' +
-               '</' + mediaType + '>';
-  if (extension === 'gif') { playerHTML = '<div id="image"><img src="' + filePath + '?_=' + new Date().getTime() + '"/></div>'; }
-  $('#player').empty().html(closerHTML + playerHTML).show();
-  $('#mediaPlayer').on('ended', function() {
-    closeVideo();
-    refreshDownloads();
-  });
+  var filePath = '/download/' + encodeURIComponent(file);
+  var $closer = $('<div id="closer"><i class="fa-solid fa-xmark"></i></div>');
+  $('#player').empty().append($closer).show();
+
+  if (extension === 'txt') {
+    var $transcript = $('<pre id="transcript">Loading transcript…</pre>');
+    $('#player').append($transcript);
+    $.get(filePath).done(function(text) { $transcript.text(text); }).fail(function() { $transcript.text('Unable to load transcript.'); });
+    return;
+  }
+
+  if (extension === 'gif') {
+    $('#player').append($('<div id="image"></div>').append($('<img>').attr('src', filePath + '?_=' + new Date().getTime())));
+    return;
+  }
+
+  var mediaType = extension === 'mp3' ? 'audio' : 'video';
+  var mimeType = extension === 'mp3' ? 'audio/mpeg' : 'video/' + extension;
+  var $media = $('<' + mediaType + ' id="mediaPlayer" controls autoplay></' + mediaType + '>');
+  $media.append($('<source>').attr({ src: filePath, type: mimeType }));
+  $('#player').append($media);
+  $media.on('ended', function() { closePlayer(); refreshDownloads(); });
 });
 
 $(document).on('play', '#mediaPlayer', function() { $('#closer').show(); });
+$(document).on('click', '#closer', closePlayer);
 
-$(document).on('click', '#closer', function() {
+function closePlayer() {
   var mediaPlayer = $('#mediaPlayer');
   mediaPlayer.trigger('pause');
-  mediaPlayer.remove();
-  $('#player').empty();
-  $(this).hide();
+  $('#player').empty().hide();
   refreshDownloads();
+}
+
+$('#helpcloser,#help').click(function() { $('#helpcloser,#help').hide(); });
+$('#helplink').click(function(event) {
+  event.stopPropagation();
+  $('#helpcloser,#help').show();
 });
 
-$("#helpcloser,#help").click(function() {
-  $("#helpcloser,#help").hide();
-});
-
-$("#helplink").click(function(){
-  $("#helpcloser").show();
-  $("#help").show();
-});
-
-$("#audio, #video, #reencode, #none").click(function() {
-  $("#audio, #video, #reencode, #none").not(this).prop("checked", false);
-  if (!$("#audio, #video, #reencode").is(":checked")) { $("#none").prop("checked", true); }
-});
-
-$("#reload").on('click', function() {
-  $(this).addClass("spinonce");
+$('#reload').on('click', function() {
+  $(this).addClass('spinonce');
   refreshDownloads();
-}).on('animationend', function() { $(this).removeClass("spinonce"); });
+}).on('animationend', function() { $(this).removeClass('spinonce'); });
 
-$("form").submit(function(e) {
-  e.preventDefault();
-  $("#output").removeClass("success error").html("");
-  var url = $("#url").val().trim();
-  var audioObj = $("#audio");
-  var videoObj = $("#video");
-  var reencodeObj = $("#reencode");
+$('#addUrl').on('click', function() { addQueueRow(); });
 
-  if(audioObj.is(":checked")) { var audio = 1; } else { var audio = 0 }
-  if(videoObj.is(":checked")) { var video = 1; } else { var video = 0 }
-  if(reencodeObj.is(":checked")) { var reencode = 1; } else { var reencode = 0 }
+$('#queueRows').on('click', '.remove-url', function() {
+  $(this).closest('.queue-row').remove();
+  if ($('.queue-row').length === 0) addQueueRow();
+  updateQueueControls();
+});
 
-  if(url !== "") {
-    downloadSubmit(url, audio, video, reencode);
-    $('#downloadSubmit').val("Working").prop('disabled', true);
+$('#queueRows').on('input change', '.queue-url, .queue-mode', function() {
+  if ($(this).hasClass('queue-url')) $(this).removeClass('brokenurl');
+  updateQueueControls();
+});
+
+$('form').submit(function(event) {
+  event.preventDefault();
+  var items = collectQueueItems();
+  if (items === null || items.length === 0) return;
+
+  $('#downloadSubmit').prop('disabled', true).val('Queueing…');
+  $.post('/system/ajax.php', { queue: JSON.stringify(items) })
+    .done(function(response) {
+      var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
+      if (json.status !== 0 || !json.jobs) {
+        showOutput(json.message || 'Unable to create queue.', 'error');
+        return;
+      }
+      if (!jobInProgress) activeJobs = {};
+      json.jobs.forEach(function(job, index) {
+        activeJobs[job.id] = $.extend({}, job, { label: describeUrl(items[index].url) });
+      });
+      jobInProgress = true;
+      renderActiveQueue();
+      showOutput(json.message, 'success');
+      resetQueueRows();
+      ensureJobPolling();
+    })
+    .fail(function() { showOutput('Unable to reach the download queue.', 'error'); })
+    .always(function() {
+      $('#downloadSubmit').val('Queue downloads');
+      updateQueueControls();
+    });
+});
+
+function addQueueRow(url, mode) {
+  if ($('.queue-row').length >= maxQueueRows) return;
+  queueRowCounter++;
+  var $row = $('<div class="queue-row"></div>');
+  var $url = $('<input type="text" class="queue-url" inputmode="url" autocomplete="off" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL">').val(url || '');
+  var $mode = $('<select class="queue-mode" aria-label="Download choice"></select>');
+  [
+    ['base', 'Base'],
+    ['h264', 'H264'],
+    ['gif', 'GIF'],
+    ['mp3', 'MP3'],
+    ['transcribe', 'Transcribe']
+  ].forEach(function(option) { $mode.append($('<option></option>').val(option[0]).text(option[1])); });
+  $mode.val(mode || 'base');
+  var $remove = $('<button type="button" class="remove-url" aria-label="Remove URL"><i class="fa-solid fa-xmark"></i></button>');
+  $row.append($url, $mode, $remove);
+  $('#queueRows').append($row);
+  updateQueueControls();
+}
+
+function resetQueueRows() {
+  $('#queueRows').empty();
+  addQueueRow();
+}
+
+function collectQueueItems() {
+  var items = [];
+  var invalid = false;
+  $('.queue-row').each(function() {
+    var $input = $(this).find('.queue-url');
+    var url = $input.val().trim();
+    if (url === '') return;
+    if (!isWebUrl(url)) {
+      $input.addClass('brokenurl');
+      invalid = true;
+      return;
+    }
+    items.push({ url: url, mode: $(this).find('.queue-mode').val() });
+  });
+  if (invalid) {
+    showOutput('Correct the highlighted URL before queueing.', 'error');
+    return null;
   }
-  else { $("#url").val(""); }
-});
+  if (items.length === 0) {
+    showOutput('Add at least one media or playlist URL.', 'error');
+    return null;
+  }
+  return items;
+}
 
-$.fn.clearOutput = function() {
-  setTimeout(() => { this.removeClass('error success').html(''); }, 10000);
-  return this;
-};
+function isWebUrl(value) {
+  try {
+    var parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  }
+  catch (error) { return false; }
+}
+
+function updateQueueControls() {
+  var hasValue = false;
+  $('.queue-url').each(function() { if ($(this).val().trim() !== '') hasValue = true; });
+  $('#downloadSubmit').prop('disabled', !hasValue);
+  $('#addUrl').prop('disabled', $('.queue-row').length >= maxQueueRows);
+  $('.remove-url').toggle($('.queue-row').length > 1);
+}
+
+function describeUrl(value) {
+  try {
+    var parsed = new URL(value);
+    var description = parsed.hostname.replace(/^www\./, '') + parsed.pathname;
+    return description.length > 46 ? description.slice(0, 43) + '…' : description;
+  }
+  catch (error) { return 'Queued URL'; }
+}
+
+function pollJobs() {
+  jobPollTimer = null;
+  if (jobPollRequest !== null) return;
+  var pendingIds = Object.keys(activeJobs).filter(function(id) {
+    return activeJobs[id].state !== 'complete' && activeJobs[id].state !== 'failed';
+  });
+  if (pendingIds.length === 0) {
+    finishQueue();
+    return;
+  }
+
+  jobPollRequest = $.get('/system/ajax.php', { jobs: pendingIds.join(',') })
+    .done(function(response) {
+      var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
+      if (json.status !== 0 || !json.jobs) return;
+      json.jobs.forEach(function(job) {
+        if (activeJobs[job.id]) activeJobs[job.id] = $.extend(activeJobs[job.id], job);
+      });
+      renderActiveQueue();
+    })
+    .always(function() {
+      jobPollRequest = null;
+      if (jobPollTimer === null) jobPollTimer = setTimeout(pollJobs, 2000);
+    });
+}
+
+function ensureJobPolling() {
+  if (jobPollRequest === null && jobPollTimer === null) pollJobs();
+}
+
+function renderActiveQueue() {
+  var $queue = $('#activeQueue').empty().show();
+  $queue.append('<h3>Active queue</h3>');
+  Object.keys(activeJobs).forEach(function(id) {
+    var job = activeJobs[id];
+    var $item = $('<div class="queue-status"></div>').addClass('state-' + job.state);
+    $item.append($('<span class="queue-status-choice"></span>').text(job.mode.toUpperCase()));
+    $item.append($('<span class="queue-status-url"></span>').text(job.label));
+    $item.append($('<span class="queue-status-message"></span>').text(job.message));
+    $queue.append($item);
+  });
+}
+
+function finishQueue() {
+  if (!jobInProgress) return;
+  jobInProgress = false;
+  if (jobPollTimer !== null) clearTimeout(jobPollTimer);
+  jobPollTimer = null;
+  $('#loader').removeClass('spinbow');
+  var jobs = Object.keys(activeJobs).map(function(id) { return activeJobs[id]; });
+  var completed = jobs.filter(function(job) { return job.state === 'complete'; }).length;
+  var failed = jobs.filter(function(job) { return job.state === 'failed'; }).length;
+  showOutput(completed + ' completed' + (failed ? ', ' + failed + ' failed.' : '.'), failed ? 'error' : 'success');
+  if (completed) {
+    refreshDownloads();
+    $('.box.list').animate({ scrollTop: 0 }, 'slow');
+  }
+}
 
 function refreshDownloads() {
-  $.get("/system/ajax.php?refresh=downloads", function(e) { $("#downloads").html(e); });
+  $.get('/system/ajax.php?refresh=downloads', function(response) { $('#downloads').html(response); });
 }
 
-function closeVideo() {
-  $('#closer').hide();
-  $('#mediaPlayer').remove();
-}
-
-function downloadSubmit(url, mp3, gif, reencode) {
-  jobInProgress = true;
-  $("#url").prop("disabled", true);
-  $.post("/system/ajax.php", { download: url, audio: mp3, video: gif, reencode: reencode }, function(e) {
-    var json = typeof e === 'string' ? jQuery.parseJSON(e) : e;
-    if (json.status == 0 && json.jobId) {
-      activeJobId = json.jobId;
-      $('#downloadSubmit').val("Working").prop('disabled', true);
-      $("#output").removeClass("error").html(json.message).addClass("success");
-      pollJob(activeJobId);
-      return;
-    }
-
-    jobInProgress = false;
-    activeJobId = null;
-    $("#url").prop('disabled', false);
-    $('#downloadSubmit').val("Download").prop('disabled', false);
-    $("#loader").removeClass('spinbow');
-    $("#output").html(json.message || "Error Downloading Content").addClass("error").clearOutput();
-  });
-}
-
-function pollJob(jobId) {
-  $.get("/system/ajax.php", { job: jobId }, function(e) {
-    var json = typeof e === 'string' ? jQuery.parseJSON(e) : e;
-    if (json.status != 0 || !json.job) {
-      finishJob("Download status failed", "error");
-      return;
-    }
-
-    var job = json.job;
-    $("#output").removeClass("error success").html(job.message || "Working").addClass(job.state === "failed" ? "error" : "success");
-
-    if (job.state === "complete") {
-      finishJob("Download Successful", "success");
-      $("#url").val('');
-      refreshDownloads();
-      $(".box.list").animate({ scrollTop: 0 }, "slow");
-      return;
-    }
-
-    if (job.state === "failed") {
-      finishJob(job.message || "Error Downloading Content", "error");
-      return;
-    }
-
-    setTimeout(function() { pollJob(jobId); }, 2000);
-  });
-}
-
-function finishJob(message, className) {
-  jobInProgress = false;
-  activeJobId = null;
-  $("#url").prop('disabled', false);
-  $('#downloadSubmit').val("Download").prop('disabled', false);
-  $("#loader").removeClass('spinbow');
-  $("#output").removeClass("error success").html(message).addClass(className).clearOutput();
-}
-
-function checkUrl() {
-  $.post('/system/ajax.php', { url: $('#url').val() }, function(response) {
-    $('#downloadSubmit').toggle(response === 'true');
-  });
+function showOutput(message, className) {
+  $('#output').removeClass('error success').text(message).addClass(className);
 }
 
 });
@@ -261,62 +344,62 @@ function checkUrl() {
 <div id="helpcloser"><i class="fa-solid fa-xmark"></i></div>
 <h2>How to Use the Downloader</h2>
 <ol>
-<li>Paste the URL to your media in the box.</li>
-<li>Choose the desired format of your output media.
+<li>Paste a media URL or playlist URL into a queue row.</li>
+<li>Choose that URL's output:
 <ul class="square">
-<li><span class="head">Base Format:</span> The media will download as-is from the content provider. No content length limit.</li>
-<li><span class="head">h264 Re-encode:</span> The video media will be re-encoded into h264 video. This will require more time and may increase the filesize of the output. Content length is limited to 120 minutes.</li>
-<li><span class="head">GIF Re-encode:</span> The video media will be re-encoded into GIF format, discarding the audio portion of the content. Content length is limited to 10 minutes.</li>
-<li><span class="head">MP3 Re-encode:</span> The audio media will be re-encoded into MP3 format, discarding the video portion of the content. No content length limit.</li>
+<li><span class="head">Base:</span> Download the original media. Playlists are supported.</li>
+<li><span class="head">H264:</span> Re-encode videos for broad device compatibility. Each video is limited to 120 minutes.</li>
+<li><span class="head">GIF:</span> Create silent GIFs. Each video is limited to 10 minutes.</li>
+<li><span class="head">MP3:</span> Extract audio from videos or playlists.</li>
+<li><span class="head">Transcribe:</span> Create timestamped written transcripts with a local Whisper model.</li>
 </ul>
 </li>
-<li>Click Download to begin processing your output media.</li>
+<li>Use <span class="head">Add another URL</span> to give each item its own output choice, then click Queue downloads.</li>
 </ol>
 <h2>Tools:</h2>
 <ul>
-<li>Click the title to play downloaded content from the list.</li>
+<li>Click a media title to play it or a transcript title to read it.</li>
 <li>Click the <i class="fa-solid fa-arrows-rotate"></i> icon to refresh the downloads list.</li>
-<li>Click the <i class="fa-solid fa-trash"></i> icon to delete media from the list.</li>
-<li>Click the <i class="fa-solid fa-floppy-disk"></i> icon to save your downloaded content.</li>
+<li>Click the <i class="fa-solid fa-trash"></i> icon to delete a completed file.</li>
+<li>Click the <i class="fa-solid fa-floppy-disk"></i> icon to save a completed file.</li>
 </ul>
 <h2>Tips:</h2>
 <ul class="dots">
-<li>The downloader supports media from content providers such as Youtube, Vimeo, Facebook, X, Instagram, TikTok, DailyMotion, Twitch, Reddit, SoundCloud, and more.</li>
-<li>H264 encoding is the most mobile device friendly format.</li>
-<li>The smiley face will indicate that the download process is taking place. When completed, your file will appear at the top of the Recent Downloads box.</li>
-<li>D̸O̷N̸'̴T̶ ̷C̴L̸I̵C̶K̵ ̸T̴H̷E̸ S̷̚ͅM̷̲̟̈́͘Ȋ̶̛͙̦L̷̹̯͎̑È̸̬̀͝Y̴͓̫͗ ̴͓͈͗Ḟ̷̨̬̈A̴͈͚̰̾͝͝C̵̙͕̏̒͗Ë̷̢͍́͘ ̶͔̄̍W̶̢̞̆̒̕H̴̗̭͂̕E̷͔͎̮̽̾̕N̸͉̱̆̎ ̴͇͍͝ͅY̴̭̭̪͒͑̏O̴̙̮̖͊̈U̵̬̒'̶̘̽͝Ȑ̴͉̾E̴͖̯͋̑ ̴̦̐̆N̴̰̺̞̈́̓O̶͍̓T̵̫͖̂̏̈́ L̸̛̟̮̟̲͂̈́̂͑͝O̵̟̝͕̗̼̓͛̽͝O̸̧̥̰̤͉͔̔͗͛̈́́̅͌͘Ǩ̷̯̳̪̝͒͠I̴̡̧̨̝̯̹͆ͅN̷͈̹̭̼̞͐̈́̄͊̓̓̚͠͝͝G̶̘̻͍͆̏̔̎ ̶̡͈͍̜̭̓̀ͅA̸̬͖͓̱̓̄͋̎̀̃̀͒͘T̶̯̗͍̖̣̲̲̈́̏̂̈̈́̑̒̀́̋ ̴̬̥̮̗̪͚̪͐̽̏̐͋͂H̶̹͉͇̭͍̯̃̽̈̊͠ͅI̷̡̖̹̱̙̭͒̈͌̐M̸̡̢̛̱͎̞̭͍̣̣͂̉́͗̃̓̏̚͝  H̴̢̛̤̞͈̜͒̈́͋͐̐́̌̏͘͝E̸̛̮̟̒͐̉̃͋͘͘͝͝'̴̨̲̖̣̥̱̥̞̼̖̥͊̋͛̓͛͝ͅS̶͎̺̖̞̈́̾͝ ̸̞͎͖̦̩̱͉̙̱͙͆̍̂͘̕L̷̛̹̦̭͉͕̰̙̭̮̰̝͔̈́͂̿̆́̈̄͛Ŏ̶̘̹̜̈́̊̿̀̃̐O̸̡̢̨͓͓̪͎̼̲̳͉͂K̸̟̖̝͕͉͈̜̳̩͋͆̊ͅͅI̸̗̖̼̗̟̓̍̇̒͑́͌̂̿͜ͅͅN̷͉̱̟̍͐̀̕G̸̦͙̯̳̤̹̣̬̙͓̲̖͇̭̓̓͒͆̐̓̎͠ ̴̤̠̼͓̻̺̊̇́͂̈͂̂̊̊͑͆̂̅̓Ą̶̤̭̜̭̭͉͎̲̓̈́̓̅̀͊̋͜Ţ̶͚̞͇͇̝͉̜̹͇̼̦̤̺̈̓̓̿̑̔́̚͝ ̴̧͇̟̦͉̄̓͑̊̑̃͗͑̔̑̚͝͠Ỵ̵̧̢̧͈̝̣̼̮͔̬̲̈́̉͌̿̈̀͠Ǫ̶̩̻͍͎̭͖̮͎͂̋̌̿̈́́̾U̷͎̯̗̥͋̂̀̀͒!̷̡̢̨̱̳̙̭̘͚̮̜̣̣̇̋̒̆̓̀̿͐̾̽͘͝</li>
+<li>The downloader supports YouTube, Vimeo, Facebook, X, Instagram, TikTok, DailyMotion, Twitch, Reddit, SoundCloud, and many other providers supported by yt-dlp.</li>
+<li>Playlist items are numbered and processed in order. Up to 50 items are accepted from one playlist.</li>
+<li>Transcription runs on this server's CPU, so long videos may take a few minutes.</li>
+<li>D̸O̷N̸'̴T̶ ̷C̴L̸I̵C̶K̵ ̸T̴H̷E̸ S̷̚ͅM̷̲̟̈́͘Ȋ̶̛͙̦L̷̹̯͎̑È̸̬̀͝Y̴͓̫͗ ̴͓͈͗Ḟ̷̨̬̈A̴͈͚̰̾͝͝C̵̙͕̏̒͗Ë̷̢͍́͘ ̶͔̄̍W̶̢̞̆̒̕H̴̗̭͂̕E̷͔͎̮̽̾̕N̸͉̱̆̎ ̴͇͍͝ͅY̴̭̭̪͒͑̏O̴̙̮̖͊̈U̵̬̒'̶̘̽͝Ȑ̴͉̾E̴͖̯͋̑ ̴̦̐̆N̴̰̺̞̈́̓O̶͍̓T̵̫͖̂̏̈́ L̸̛̟̮̟̲͂̈́̂͑͝O̵̟̝͕̗̼̓͛̽͝O̸̧̥̰̤͉͔̔͗͛̈́́̅͌͘Ǩ̷̯̳̪̝͒͠I̴̡̧̨̝̯̹͆ͅN̷͈̹̭̼̞͐̈́̄͊̓̓̚͠͝͝G̶̘̻͍͆̏̔̎ ̶̡͈͍̜̭̓̀ͅA̸̬͖͓̱̓̄͋̎̀̃̀͒͘T̶̯̗͍̖̣̲̲̈́̏̂̈̈́̑̒̀́̋ ̴̬̥̮̗̪͚̪͐̽̏̐͋͂H̶̹͉͇̭͍̯̃̽̈̊͠ͅI̷̡̖̹̱̙̭͒̈͌̐M̸̡̢̛̱͎̞̭͍̣̣͂̉́͗̃̓̏̚͝.</li>
 </ul>
 </div>
 </div>
 
 <div id="container">
-
-<img id="loader" src="/system/face.png" />
+<img id="loader" src="/system/face.png" alt="Download activity" />
 
 <div class="box">
 <p class="title">Awesome Media Downloader</p>
 <p class="icons"><i class="fa-brands fa-youtube"></i><i class="fa-brands fa-vimeo"></i><i class="fa-brands fa-facebook"></i><i class="fa-brands fa-x-twitter"></i><i class="fa-brands fa-instagram"></i><i class="fa-brands fa-tiktok"></i><i class="fa-brands fa-dailymotion"></i><i class="fa-brands fa-twitch"></i><i class="fa-brands fa-reddit-alien"></i><i class="fa-brands fa-soundcloud"></i></p>
 <form>
-<div class="flex"><input type="text" id="url" name="url" placeholder="Paste URL Here" /><input type="submit" id="downloadSubmit" name="downloadSubmit" value="Download" /></div>
-<div id="options">
-<i id="helplink" class="link fa-solid fa-circle-question"></i>
-<label class="container" for="none"><span class="label">Base</span><input checked type="checkbox" name="none" id="none" /><span class="checkmark"></span></label>
-<label class="container" for="reencode"><span class="label">H264</span><input type="checkbox" name="reencode" id="reencode" /><span class="checkmark"></span></label>
-<label class="container" for="video"><span class="label">GIF</span><input type="checkbox" name="video" id="video" /><span class="checkmark"></span></label>
-<label class="container" for="audio"><span class="label">MP3</span><input type="checkbox" name="audio" id="audio" /><span class="checkmark"></span></label>
-<p id="output"></p>
+<div id="queueRows"></div>
+<div id="queueActions">
+<button type="button" id="addUrl"><i class="fa-solid fa-plus"></i> Add another URL</button>
+<input type="submit" id="downloadSubmit" value="Queue downloads" disabled />
 </div>
+<div id="options">
+<i id="helplink" class="link fa-solid fa-circle-question" aria-label="Help"></i>
+<span class="queue-hint">Each URL can use a different format. Playlist links are supported.</span>
+</div>
+<p id="output" aria-live="polite"></p>
 </form>
+<div id="activeQueue" aria-live="polite"></div>
 <div id="player"></div>
 </div>
 
 <div class="box list">
 <span id="reload"><i class="fa-solid fa-arrows-rotate"></i></span>
 <h2>Recent Downloads</h2>
-<ul id="downloads">
-</ul>
+<ul id="downloads"></ul>
 </div>
-
 </div>
 </body>
 

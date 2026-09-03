@@ -9,8 +9,33 @@ services:
     environment:
       DOWNLOADER_GIF_MAX_SECONDS: 600
       DOWNLOADER_REENCODE_MAX_SECONDS: 7200
+      DOWNLOADER_MAX_BATCH_ITEMS: 20
+      DOWNLOADER_PLAYLIST_MAX_ITEMS: 50
+      DOWNLOADER_TRANSCRIBER_URL: http://downloader-transcriber:8000
+      DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR: /work
     volumes:
       - ./app:/var/www/html
       - ./temp:/var/www/html/temp
       - ./download:/var/www/html/download
+    restart: unless-stopped
+
+  downloader-transcriber:
+    build:
+      context: ./transcriber
+    image: awesome-downloader-transcriber:latest
+    container_name: downloader-transcriber
+    environment:
+      WHISPER_MODEL: small
+      WHISPER_COMPUTE_TYPE: int8
+      WHISPER_THREADS: 3
+      WHISPER_MODEL_CACHE: /models
+      TRANSCRIBER_WORK_ROOT: /work/work
+    volumes:
+      - ./temp:/work
+    cpus: 3
+    mem_limit: 2500m
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp
     restart: unless-stopped

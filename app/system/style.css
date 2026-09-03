@@ -92,6 +92,33 @@ form {
   gap: 1em;
 }
 
+#queueRows {
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+  max-height: 38vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: .25rem;
+}
+.queue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 8rem 2.75rem;
+  gap: .5rem;
+}
+#queueActions {
+  display: flex;
+  justify-content: space-between;
+  gap: .75rem;
+}
+#queueActions > * { flex: 1 }
+.remove-url { padding: 0 }
+.queue-hint {
+  color: rgba(255,255,255,.8);
+  font-family: "SFLight";
+  line-height: 1.25rem;
+}
+
 h2 {
  color: #FFF;
  font-family: "SFBold";
@@ -156,6 +183,36 @@ h2 {
 #output.error { background: #D44 }
 #output.success { background: #2B2 }
 
+#activeQueue {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  border: 2px solid rgba(255,255,255,.25);
+  padding: .75rem;
+  background: rgba(0,0,0,.25);
+  max-height: 24vh;
+  overflow-y: auto;
+}
+#activeQueue h3 { font-family: "SFBold" }
+.queue-status {
+  display: grid;
+  grid-template-columns: 5rem minmax(8rem, 1fr) minmax(9rem, 1.5fr);
+  gap: .5rem;
+  align-items: baseline;
+  border-left: 3px solid #0A8;
+  padding-left: .5rem;
+}
+.queue-status-choice { color: #5FC; font-family: "SFBold" }
+.queue-status-url, .queue-status-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-status-message { color: rgba(255,255,255,.8) }
+.queue-status.state-complete { border-color: #2B2 }
+.queue-status.state-failed { border-color: #D44 }
+.queue-status.state-failed .queue-status-message { color: #F99 }
+
 #player { position: relative }
 #player video, #player audio, #player #image {
   width: 100%;
@@ -172,6 +229,17 @@ h2 {
 }
 #player #image img {
   height: 100%;
+}
+#transcript {
+  width: 100%;
+  max-height: 44vh;
+  border: 2px solid #0A8;
+  padding: 1rem;
+  overflow: auto;
+  background: rgba(0,0,0,.85);
+  color: #FFF;
+  font: 1rem/1.5rem "SFRegular";
+  white-space: pre-wrap;
 }
 
 .box.list, audio, video, input[type=text] { box-shadow: 0 0 50px rgba(0,0,0,.5) }
@@ -219,8 +287,8 @@ p.title {
 .icons .fa-vimeo { color: #17D5FF }
 .icons .fa-vimeo::after {
  position: absolute;
- top: .125em;
- left: .07em;
+ top: 4px;
+ left: 7px;
  height: .75em;
  width: .75em;
  background: #FFF;
@@ -230,10 +298,10 @@ p.title {
 .icons .fa-facebook { color: #0866FF }
 .icons .fa-facebook::after {
  position: absolute;
- top: .045em;
- left: .03em;
- height: .95em;
- width: .95em;
+ top: 0;
+ left: 4px;
+ height: 1.8rem;
+ width: 1.8rem;
  background: #FFF;
  content: " ";
  border-radius: 2em;
@@ -258,8 +326,8 @@ p.title {
 .icons .fa-dailymotion { color: #08C2FE }
 .icons .fa-dailymotion::after {
  position: absolute;
- top: .125em;
- left: .07em;
+ top: 3px;
+ left: 7px;
  height: .75em;
  width: .75em;
  background: #FFF;
@@ -275,7 +343,7 @@ p.title {
 .icons .fa-reddit-alien::after {
  position: absolute;
  top: 0;
- left: 0;
+ left: -1px;
  height: 100%;
  width: 100%;
  background: #f74300;
@@ -321,7 +389,7 @@ ol.nobullet li, ul.nobullet li {
 }
 li::marker { color: #5FC }
 
-input[type=text] {
+input[type=text], select {
   display: inline-block;
   border: 2px solid rgba(255,255,255,.25);
   padding: 10px;
@@ -330,10 +398,12 @@ input[type=text] {
   font-family: "SFMedium";
   width: 100%;
 }
-input[type=text]:focus, input[type=text]:hover, input[type=text]:not(:placeholder-shown) { border: 2px solid #0A8 }
+select { cursor: pointer }
+select option { background: #222; color: #FFF }
+input[type=text]:focus, input[type=text]:hover, input[type=text]:not(:placeholder-shown), select:focus, select:hover { border: 2px solid #0A8 }
 input[type=text].brokenurl { border-color: #C44 }
 
-input[type=submit] {
+input[type=submit], button {
  padding: 12px 20px;
  background: #0A8;
  color: #222;
@@ -341,15 +411,16 @@ input[type=submit] {
  font-size: 1em;
  cursor: pointer;
 }
-input[type=submit]:hover {
+input[type=submit]:hover, button:hover {
  background: #0A8;
  color: #FFF;
 }
-input[type=submit]:disabled {
+input[type=submit]:disabled, button:disabled {
+ opacity: .55;
  color: #222;
- cursor: wait;
+ cursor: not-allowed;
 }
-input[type=submit]:disabled:hover {
+input[type=submit]:disabled:hover, button:disabled:hover {
  background: #C44;
  color: #FFF;
 }
@@ -444,6 +515,7 @@ label.container {
     min-height: unset;
   }
   .list { max-width: unset }
+  #queueRows { max-height: 30vh }
   #loader {
     top: 2px;
     right: 0;
@@ -476,6 +548,10 @@ label.container {
   }
   #helpcloser { left: unset; right: 0; position: fixed }
   .box { padding: 2rem }
+  .queue-row { grid-template-columns: minmax(0, 1fr) 7rem 2.5rem }
+  #queueActions { flex-direction: column }
+  .queue-status { grid-template-columns: 4.5rem minmax(0, 1fr) }
+  .queue-status-message { grid-column: 1 / -1; padding-left: 5rem }
   .list {
     max-height: unset;
   }
