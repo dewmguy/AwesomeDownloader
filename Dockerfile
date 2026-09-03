@@ -1,12 +1,11 @@
-FROM php:8.3-apache
+FROM php@sha256:973e11c67c1c81e7811077a0efa0f910cf903af0ba972cab6ba0c0e15913c771
 
 ENV DEBIAN_FRONTEND=noninteractive
-ARG YT_DLP_VERSION=latest
+ARG YT_DLP_VERSION=2026.07.04
 
 RUN echo "ServerName localhost" > /etc/apache2/conf-available/servername.conf && \
     a2enconf servername
 
-# Install only what yt-dlp needs at runtime
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
