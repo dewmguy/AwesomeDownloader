@@ -35,6 +35,9 @@ RUN set -eux; \
     mkdir -p "$plugin_dir"; \
     curl -fSL "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/$POT_PROVIDER_VERSION/bgutil-ytdlp-pot-provider.zip" -o "$plugin_archive"; \
     echo "$POT_PROVIDER_SHA256  $plugin_archive" | sha256sum -c -; \
-    printf '%s\n' '--extractor-args youtubepot-bgutilhttp:base_url=http://downloader-pot-provider:4416' > /etc/yt-dlp.conf; \
+    printf '%s\n' \
+      '--extractor-args youtube:player_client=mweb' \
+      '--extractor-args youtubepot-bgutilhttp:base_url=http://downloader-pot-provider:4416' \
+      > /etc/yt-dlp.conf; \
     apt-get purge -y --auto-remove unzip; \
     rm -rf /var/lib/apt/lists/*
