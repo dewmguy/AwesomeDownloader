@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20260903-help-dialog" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20260903-url-validation" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -253,8 +253,19 @@ $(document).on('click', closeModeMenus);
 $(window).on('resize scroll', closeModeMenus);
 $('#queueRows').on('scroll', closeModeMenus);
 
-$('#queueRows').on('input change', '.queue-url, .queue-mode', function() {
-  if ($(this).hasClass('queue-url')) $(this).removeClass('brokenurl');
+$('#queueRows').on('input', '.queue-url', function() {
+  var $input = $(this);
+  var request = $input.data('validationRequest');
+  if (request) request.abort();
+  resetUrlValidation($input);
+  updateQueueControls();
+});
+
+$('#queueRows').on('blur', '.queue-url', function() {
+  if ($(this).val().trim() !== '') validateQueueUrl($(this));
+});
+
+$('#queueRows').on('change', '.queue-mode', function() {
   updateQueueControls();
 });
 
@@ -263,37 +274,42 @@ $('form').submit(function(event) {
   var items = collectQueueItems();
   if (items === null || items.length === 0) return;
 
-  var isQueue = items.length > 1;
-  $('#downloadSubmit').data('submitting', true).prop('disabled', true).find('.button-label').text(isQueue ? 'Queueing downloads…' : 'Starting download…');
-  $.post('/system/ajax.php', { queue: JSON.stringify(items) })
-    .done(function(response) {
-      var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
-      if (json.status !== 0 || !json.jobs) {
-        showOutput(json.message || 'Unable to create queue.', 'error');
-        return;
-      }
-      if (!jobInProgress) activeJobs = {};
-      json.jobs.forEach(function(job, index) {
-        activeJobs[job.id] = $.extend({}, job, { label: describeUrl(items[index].url) });
-      });
-      jobInProgress = true;
-      renderActiveQueue();
-      showOutput(json.message, 'success');
-      resetQueueRows();
-      ensureJobPolling();
-    })
-    .fail(function() { showOutput('Unable to reach the download queue.', 'error'); })
-    .always(function() {
-      $('#downloadSubmit').removeData('submitting');
-      updateQueueControls();
-    });
+  setQueueSubmitting(true, 'Validating…');
+  validateQueueInputsSequentially().done(function(valid) {
+    if (!valid) {
+      setQueueSubmitting(false);
+      return;
+    }
+
+    var isQueue = items.length > 1;
+    $('#downloadSubmit').find('.button-label').text(isQueue ? 'Queueing downloads…' : 'Starting download…');
+    $.post('/system/ajax.php', { queue: JSON.stringify(items) })
+      .done(function(response) {
+        var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
+        if (json.status !== 0 || !json.jobs) {
+          showOutput(json.message || 'Unable to create queue.', 'error');
+          return;
+        }
+        if (!jobInProgress) activeJobs = {};
+        json.jobs.forEach(function(job, index) {
+          activeJobs[job.id] = $.extend({}, job, { label: describeUrl(items[index].url) });
+        });
+        jobInProgress = true;
+        renderActiveQueue();
+        showOutput(json.message, 'success');
+        resetQueueRows();
+        ensureJobPolling();
+      })
+      .fail(function() { showOutput('Unable to reach the download queue.', 'error'); })
+      .always(function() { setQueueSubmitting(false); });
+  });
 });
 
 function addQueueRow(url, mode) {
   if ($('.queue-row').length >= maxQueueRows) return;
   queueRowCounter++;
   var $row = $('<div class="queue-row"></div>');
-  var $url = $('<input type="text" class="queue-url" inputmode="url" autocomplete="off" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL">').val(url || '');
+  var $url = $('<input type="url" class="queue-url" inputmode="url" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048" enterkeyhint="done" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL" aria-invalid="false">').val(url || '');
   var selectedMode = mode || 'base';
   var menuId = 'queueModeMenu' + queueRowCounter;
   var $mode = $('<input type="hidden" class="queue-mode">');
@@ -319,7 +335,8 @@ function addQueueRow(url, mode) {
   $modeButton.append($('<span class="queue-mode-label"></span>').text(selectedLabel[1]), '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i>');
   $modePicker.append($mode, $modeButton, $modeMenu);
   var $remove = $('<button type="button" class="remove-url" aria-label="Remove URL from queue" title="Remove from queue"><i class="fa-solid fa-trash-can" aria-hidden="true"></i></button>');
-  $row.append($url, $modePicker, $remove);
+  var $validation = $('<span class="url-validation" aria-live="polite"></span>');
+  $row.append($url, $modePicker, $remove, $validation);
   $('#queueRows').append($row);
   updateQueueControls();
 }
@@ -351,19 +368,22 @@ function resetQueueRows() {
 function collectQueueItems() {
   var items = [];
   var invalid = false;
+  var firstError = '';
   $('.queue-row').each(function() {
     var $input = $(this).find('.queue-url');
     var url = $input.val().trim();
     if (url === '') return;
-    if (!isWebUrl(url)) {
-      $input.addClass('brokenurl');
+    var validation = validateUrlShape(url);
+    if (!validation.valid) {
+      setUrlValidation($input, 'invalid', validation.message);
+      if (firstError === '') firstError = validation.message;
       invalid = true;
       return;
     }
     items.push({ url: url, mode: $(this).find('.queue-mode').val() });
   });
   if (invalid) {
-    showOutput('Correct the highlighted URL before queueing.', 'error');
+    showOutput(firstError || 'Correct the highlighted URL before downloading.', 'error');
     return null;
   }
   if (items.length === 0) {
@@ -373,12 +393,149 @@ function collectQueueItems() {
   return items;
 }
 
-function isWebUrl(value) {
+function validateUrlShape(value) {
   try {
+    if (value.length > 2048 || /[\u0000-\u001f\u007f]/.test(value)) return { valid: false, message: 'Enter a complete URL no longer than 2048 characters.' };
     var parsed = new URL(value);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return { valid: false, message: 'Use a complete http:// or https:// URL.' };
+    if (parsed.username || parsed.password) return { valid: false, message: 'URLs containing a username or password are not allowed.' };
+    if (parsed.port && parsed.port !== '80' && parsed.port !== '443') return { valid: false, message: 'Only standard web ports are allowed.' };
+
+    var hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    if (!hostname || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) || hostname.indexOf(':') !== -1) {
+      return { valid: false, message: 'Use a public media-site address instead of a direct IP address.' };
+    }
+    var reserved = ['localhost', 'local', 'internal', 'home', 'lan', 'test', 'invalid', 'example', 'onion'];
+    for (var index = 0; index < reserved.length; index++) {
+      if (hostname === reserved[index] || hostname.slice(-(reserved[index].length + 1)) === '.' + reserved[index]) {
+        return { valid: false, message: 'Local and reserved hostnames are not allowed.' };
+      }
+    }
+    var reservedHosts = ['example.com', 'example.net', 'example.org', 'home.arpa'];
+    for (var hostIndex = 0; hostIndex < reservedHosts.length; hostIndex++) {
+      if (hostname === reservedHosts[hostIndex] || hostname.slice(-(reservedHosts[hostIndex].length + 1)) === '.' + reservedHosts[hostIndex]) {
+        return { valid: false, message: 'Local and reserved hostnames are not allowed.' };
+      }
+    }
+    return { valid: true, message: 'Ready to check.' };
   }
-  catch (error) { return false; }
+  catch (error) { return { valid: false, message: 'Use a complete http:// or https:// URL.' }; }
+}
+
+function setUrlValidation($input, state, message) {
+  var icons = {
+    checking: 'fa-solid fa-circle-notch fa-spin',
+    valid: 'fa-solid fa-circle-check',
+    invalid: 'fa-solid fa-circle-exclamation'
+  };
+  var $status = $input.closest('.queue-row').find('.url-validation');
+  $input.removeClass('brokenurl validurl checkingurl')
+    .addClass(state === 'invalid' ? 'brokenurl' : state === 'valid' ? 'validurl' : state === 'checking' ? 'checkingurl' : '')
+    .attr('aria-invalid', state === 'invalid' ? 'true' : 'false');
+  $status.removeClass('checking valid invalid').empty();
+  if (!message || !icons[state]) return;
+  $status.addClass(state).append($('<i aria-hidden="true"></i>').attr('class', icons[state]), document.createTextNode(message));
+}
+
+function resetUrlValidation($input) {
+  $input.removeData('validatedUrl validationState validationPromise validationRequest');
+  setUrlValidation($input, 'idle', '');
+}
+
+function resolvedValidation(result) {
+  return $.Deferred().resolve(result).promise();
+}
+
+function validateQueueUrl($input) {
+  var url = $input.val().trim();
+  if (url === '') {
+    resetUrlValidation($input);
+    return resolvedValidation({ valid: true, empty: true });
+  }
+
+  var shape = validateUrlShape(url);
+  if (!shape.valid) {
+    $input.data({ validatedUrl: url, validationState: 'invalid' });
+    setUrlValidation($input, 'invalid', shape.message);
+    return resolvedValidation(shape);
+  }
+
+  if ($input.data('validatedUrl') === url && $input.data('validationState') === 'valid') {
+    return resolvedValidation({ valid: true, message: $input.closest('.queue-row').find('.url-validation').text() });
+  }
+  if ($input.data('validatedUrl') === url && $input.data('validationPromise')) return $input.data('validationPromise');
+
+  var deferred = $.Deferred();
+  var promise = deferred.promise();
+  $input.data({ validatedUrl: url, validationState: 'checking', validationPromise: promise });
+  setUrlValidation($input, 'checking', 'Checking with yt-dlp…');
+
+  var request = $.post('/system/ajax.php', { validateUrl: url })
+    .done(function(response) {
+      if ($input.val().trim() !== url) {
+        deferred.resolve({ valid: false, stale: true });
+        return;
+      }
+      var json;
+      try { json = typeof response === 'string' ? jQuery.parseJSON(response) : response; }
+      catch (error) { json = { valid: false, message: 'The server returned an invalid validation response.' }; }
+      var valid = json.status === 0 && json.valid === true;
+      $input.data('validationState', valid ? 'valid' : 'invalid');
+      setUrlValidation($input, valid ? 'valid' : 'invalid', json.message || (valid ? 'Supported URL.' : 'This URL is not supported.'));
+      deferred.resolve({ valid: valid, message: json.message });
+    })
+    .fail(function(xhr, status) {
+      if (status === 'abort') {
+        deferred.resolve({ valid: false, stale: true });
+        return;
+      }
+      var message = 'Unable to validate this URL right now.';
+      $input.data('validationState', 'invalid');
+      setUrlValidation($input, 'invalid', message);
+      deferred.resolve({ valid: false, message: message });
+    })
+    .always(function() {
+      if ($input.data('validationRequest') === request) $input.removeData('validationRequest validationPromise');
+    });
+  $input.data('validationRequest', request);
+  return promise;
+}
+
+function validateQueueInputsSequentially() {
+  var inputs = $('.queue-url').filter(function() { return $(this).val().trim() !== ''; }).toArray();
+  var deferred = $.Deferred();
+  function validateNext(index) {
+    if (index >= inputs.length) {
+      deferred.resolve(true);
+      return;
+    }
+    var $input = $(inputs[index]);
+    validateQueueUrl($input).done(function(result) {
+      if (!result.valid) {
+        if (!result.stale) {
+          showOutput(result.message || 'Correct the highlighted URL before downloading.', 'error');
+          setTimeout(function() { $input.focus(); }, 0);
+        }
+        deferred.resolve(false);
+        return;
+      }
+      validateNext(index + 1);
+    });
+  }
+  validateNext(0);
+  return deferred.promise();
+}
+
+function setQueueSubmitting(submitting, label) {
+  var $submit = $('#downloadSubmit');
+  if (submitting) {
+    $submit.data('submitting', true).prop('disabled', true).find('.button-label').text(label || 'Validating…');
+    $('.queue-url,.queue-mode-button,.remove-url,#addUrl').prop('disabled', true);
+    return;
+  }
+  $submit.removeData('submitting');
+  $('.queue-url,.queue-mode-button,.remove-url,#addUrl').prop('disabled', false);
+  updateQueueControls();
 }
 
 function updateQueueControls() {
@@ -485,7 +642,7 @@ function showOutput(message, className) {
 <div id="helpcloser"><i class="fa-solid fa-xmark"></i></div>
 <h2>How to Use the Downloader</h2>
 <ol>
-<li>Paste a media or playlist URL.</li>
+<li>Paste a public media or playlist URL. The field checks that yt-dlp recognizes downloadable media before it enters the queue.</li>
 <li>Choose a download method.</li>
 <li>Use <span class="head">Add URL</span> for more jobs. Each URL can use a different method.</li>
 <li>Click <span class="head">Download</span> for one job or <span class="head">Download Queue</span> for several.</li>
@@ -541,7 +698,7 @@ function showOutput(message, className) {
 
 <div class="box">
 <p class="title">Awesome Media Downloader</p>
-<form>
+<form novalidate>
 <div id="queueRows"></div>
 <div id="queueActions">
 <button type="button" id="addUrl"><i class="fa-solid fa-plus"></i> Add URL</button>

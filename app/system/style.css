@@ -109,6 +109,23 @@ form {
   gap: .5rem;
 }
 .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 8rem }
+.url-validation {
+  display: none;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: .4rem;
+  margin-top: -.2rem;
+  padding: 0 .25rem;
+  color: rgba(255,255,255,.8);
+  font-family: "SFMedium", sans-serif;
+  font-size: .82rem;
+  line-height: 1.25;
+}
+.url-validation:not(:empty) { display: flex }
+.url-validation i { font-size: .82rem }
+.url-validation.valid { color: #5FC }
+.url-validation.invalid { color: #F99 }
+.url-validation.checking { color: #FFF }
 #queueActions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 2.75rem;
@@ -335,7 +352,7 @@ h2 {
   opacity: 0;
 }
 
-.box.list, audio, video, input[type=text] { box-shadow: 0 0 50px rgba(0,0,0,.5) }
+.box.list, audio, video, input[type=url] { box-shadow: 0 0 50px rgba(0,0,0,.5) }
 
 p {
  text-align: left;
@@ -498,7 +515,7 @@ ol.nobullet li, ul.nobullet li {
 }
 li::marker { color: #5FC }
 
-input[type=text] {
+input[type=url] {
   display: inline-block;
   border: 2px solid rgba(255,255,255,.25);
   padding: 10px;
@@ -507,8 +524,10 @@ input[type=text] {
   font-family: "SFMedium";
   width: 100%;
 }
-input[type=text]:focus, input[type=text]:hover, input[type=text]:not(:placeholder-shown) { border: 2px solid #0A8 }
-input[type=text].brokenurl { border-color: #C44 }
+input[type=url]:focus, input[type=url]:hover, input[type=url]:not(:placeholder-shown) { border: 2px solid #0A8 }
+input[type=url].checkingurl { border-color: #FFF }
+input[type=url].validurl { border-color: #5FC }
+input[type=url].brokenurl { border-color: #C44 }
 
 input[type=submit], button {
  padding: 12px 20px;

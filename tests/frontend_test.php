@@ -21,7 +21,7 @@ $expectedBrands = [
 checkFrontend($matches[1] === $expectedBrands, 'The supported brand icon bar changed unexpectedly.');
 checkFrontend(str_contains($html, 'fa-solid fa-download'), 'The single-download action is missing its Font Awesome icon.');
 checkFrontend(str_contains($html, "toggleClass('fa-list-check', jobCount > 1)"), 'The multi-job queue icon is not dynamic.');
-checkFrontend(str_contains($html, 'style.css?v=20260903-help-dialog'), 'The Help dialog stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'style.css?v=20260903-url-validation'), 'The URL-validation stylesheet is not cache-busted.');
 checkFrontend(str_contains($css, 'grid-template-columns: repeat(10, minmax(0, 1fr));'), 'The desktop brand grid is missing.');
 checkFrontend(str_contains($css, 'grid-template-columns: repeat(5, minmax(0, 1fr));'), 'The mobile brand grid is missing.');
 checkFrontend((bool)preg_match('/<div id="help">[\s\S]*?<p class="icons"[\s\S]*?<\/p>[\s\S]*?<\/div>\s*<\/div>\s*<div id="container">/', $html), 'The brand icons are not contained in the Help dialog.');
@@ -48,5 +48,16 @@ checkFrontend(str_contains($html, "D̸O̷N̸'̴T̶"), 'The original fun Help war
 checkFrontend(str_contains($html, '<button type="button" id="helplink" aria-label="Help" title="Help">'), 'Help is not an accessible action-row button.');
 checkFrontend(!str_contains($html, '<div id="options">'), 'Help still occupies a separate form row.');
 checkFrontend(str_contains($css, 'grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 2.75rem;'), 'The queue action row does not reserve an inline Help column.');
+checkFrontend(str_contains($html, '<form novalidate>'), 'The queue form does not use the custom validation experience.');
+checkFrontend(str_contains($html, 'type="url" class="queue-url"'), 'Queue fields are not semantic URL inputs.');
+checkFrontend(str_contains($html, 'maxlength="2048"'), 'Queue URL fields are missing a safe length limit.');
+checkFrontend(str_contains($html, 'class="url-validation" aria-live="polite"'), 'Queue rows are missing accessible validation feedback.');
+checkFrontend(str_contains($html, "$.post('/system/ajax.php', { validateUrl: url })"), 'Queue rows do not request authoritative URL validation.');
+checkFrontend(str_contains($html, "setQueueSubmitting(true, 'Validating…')"), 'Queue submission does not validate before queueing.');
+checkFrontend(str_contains($html, 'function validateQueueInputsSequentially()'), 'Multiple URL validations are not serialized.');
+checkFrontend(str_contains($html, "parsed.username || parsed.password"), 'Client URL validation does not reject embedded credentials.');
+checkFrontend(str_contains($css, '.url-validation:not(:empty) { display: flex }'), 'Inline URL validation feedback is not styled.');
+checkFrontend(str_contains($css, 'input[type=url].brokenurl { border-color: #C44 }'), 'Invalid URL fields are not visually identified.');
+checkFrontend(str_contains($html, 'The field checks that yt-dlp recognizes downloadable media before it enters the queue.'), 'The Help dialog does not explain URL validation.');
 
 echo "Frontend tests passed.\n";

@@ -7,10 +7,15 @@ define('FINAL_DIR', getenv('DOWNLOADER_FINAL_DIR') ?: '/var/www/html/download');
 define('JOB_DIR', TEMP_DIR . '/jobs');
 define('WORK_DIR', TEMP_DIR . '/work');
 define('QUEUE_LOCK', TEMP_DIR . '/queue.lock');
+define('URL_VALIDATION_CACHE_DIR', TEMP_DIR . '/url-validation');
+define('URL_VALIDATION_LOCK', TEMP_DIR . '/url-validation.lock');
 define('GIF_MAX_SECONDS', (int)(getenv('DOWNLOADER_GIF_MAX_SECONDS') ?: 600));
 define('REENCODE_MAX_SECONDS', (int)(getenv('DOWNLOADER_REENCODE_MAX_SECONDS') ?: 7200));
 define('MAX_BATCH_ITEMS', (int)(getenv('DOWNLOADER_MAX_BATCH_ITEMS') ?: 20));
 define('PLAYLIST_MAX_ITEMS', (int)(getenv('DOWNLOADER_PLAYLIST_MAX_ITEMS') ?: 50));
+define('URL_MAX_LENGTH', 2048);
+define('URL_VALIDATION_TIMEOUT', max(5, (int)(getenv('DOWNLOADER_URL_VALIDATION_TIMEOUT') ?: 25)));
+define('URL_VALIDATION_CACHE_SECONDS', max(30, (int)(getenv('DOWNLOADER_URL_VALIDATION_CACHE_SECONDS') ?: 600)));
 define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://downloader-transcriber:8000', '/'));
 define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: '/work', '/'));
 define('TRANSCRIPTION_TIMEOUT', (int)(getenv('DOWNLOADER_TRANSCRIPTION_TIMEOUT') ?: 14400));
@@ -90,6 +95,230 @@ function getMediaDurations($url) {
   return null;
 }
 
+function invalidUrlResult($message) {
+  return ['valid' => false, 'message' => $message];
+}
+
+function validateUrlStructure($url) {
+  $url = trim((string)$url);
+  if ($url === '' || strlen($url) > URL_MAX_LENGTH || preg_match('/[\x00-\x1F\x7F]/', $url)) {
+    return invalidUrlResult('Enter a complete web URL no longer than ' . URL_MAX_LENGTH . ' characters.');
+  }
+
+  $parts = parse_url($url);
+  $scheme = strtolower((string)($parts['scheme'] ?? ''));
+  if (!filter_var($url, FILTER_VALIDATE_URL) || !in_array($scheme, ['http', 'https'], true)) {
+    return invalidUrlResult('Enter a complete http:// or https:// URL.');
+  }
+  if (isset($parts['user']) || isset($parts['pass'])) {
+    return invalidUrlResult('URLs containing a username or password are not allowed.');
+  }
+  if (isset($parts['port']) && !in_array((int)$parts['port'], [80, 443], true)) {
+    return invalidUrlResult('Only standard web ports are allowed.');
+  }
+
+  $host = strtolower(rtrim(trim((string)($parts['host'] ?? ''), '[]'), '.'));
+  if ($host === '' || filter_var($host, FILTER_VALIDATE_IP)) {
+    return invalidUrlResult('Use a public media-site address instead of a direct IP address.');
+  }
+  if (strlen($host) > 253 || !preg_match('/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i', $host)) {
+    return invalidUrlResult('The URL hostname is invalid.');
+  }
+
+  foreach (['localhost', 'local', 'internal', 'home', 'lan', 'test', 'invalid', 'example', 'onion'] as $privateSuffix) {
+    if ($host === $privateSuffix || str_ends_with($host, '.' . $privateSuffix)) {
+      return invalidUrlResult('Local and reserved hostnames are not allowed.');
+    }
+  }
+  foreach (['example.com', 'example.net', 'example.org', 'home.arpa'] as $reservedHost) {
+    if ($host === $reservedHost || str_ends_with($host, '.' . $reservedHost)) {
+      return invalidUrlResult('Local and reserved hostnames are not allowed.');
+    }
+  }
+
+  return ['valid' => true, 'message' => 'The URL format is valid.', 'url' => $url, 'host' => $host];
+}
+
+function resolveHostAddresses($host) {
+  $addresses = [];
+  if (function_exists('dns_get_record')) {
+    $records = @dns_get_record($host, DNS_A | DNS_AAAA);
+    if (is_array($records)) {
+      foreach ($records as $record) {
+        if (!empty($record['ip'])) $addresses[] = $record['ip'];
+        if (!empty($record['ipv6'])) $addresses[] = $record['ipv6'];
+      }
+    }
+  }
+  if (empty($addresses) && function_exists('gethostbynamel')) {
+    $ipv4Addresses = @gethostbynamel($host);
+    if (is_array($ipv4Addresses)) $addresses = array_merge($addresses, $ipv4Addresses);
+  }
+  return array_values(array_unique($addresses));
+}
+
+function isIpInCidr($address, $network, $prefixLength) {
+  $addressBytes = @inet_pton($address);
+  $networkBytes = @inet_pton($network);
+  if ($addressBytes === false || $networkBytes === false || strlen($addressBytes) !== strlen($networkBytes)) return false;
+
+  $fullBytes = intdiv($prefixLength, 8);
+  if ($fullBytes > 0 && substr($addressBytes, 0, $fullBytes) !== substr($networkBytes, 0, $fullBytes)) return false;
+  $remainingBits = $prefixLength % 8;
+  if ($remainingBits === 0) return true;
+  $mask = (0xFF << (8 - $remainingBits)) & 0xFF;
+  return (ord($addressBytes[$fullBytes]) & $mask) === (ord($networkBytes[$fullBytes]) & $mask);
+}
+
+function isPublicIpAddress($address) {
+  if (!filter_var($address, FILTER_VALIDATE_IP)) return false;
+
+  $blockedNetworks = str_contains($address, ':')
+    ? [
+      ['::', 96], ['::1', 128], ['::ffff:0:0', 96], ['64:ff9b::', 96],
+      ['100::', 64], ['2001::', 23], ['2001:db8::', 32], ['2002::', 16],
+      ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8]
+    ]
+    : [
+      ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+      ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+      ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24],
+      ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4]
+    ];
+  foreach ($blockedNetworks as [$network, $prefixLength]) {
+    if (isIpInCidr($address, $network, $prefixLength)) return false;
+  }
+  return true;
+}
+
+function validatePublicUrlTarget($url, $resolver = null) {
+  $structure = validateUrlStructure($url);
+  if (!$structure['valid']) return $structure;
+
+  try {
+    $addresses = $resolver === null ? resolveHostAddresses($structure['host']) : $resolver($structure['host']);
+  }
+  catch (Throwable $error) {
+    $addresses = [];
+  }
+  if (!is_array($addresses) || empty($addresses)) {
+    return invalidUrlResult('The URL hostname could not be resolved.');
+  }
+  foreach ($addresses as $address) {
+    if (!is_string($address) || !isPublicIpAddress($address)) {
+      return invalidUrlResult('The URL must resolve only to public internet addresses.');
+    }
+  }
+  return $structure;
+}
+
+function buildYtDlpValidationCommand($url) {
+  return [
+    'yt-dlp', '--yes-playlist', '--playlist-end', '1', '--skip-download',
+    '--dump-single-json', '--no-warnings', '--socket-timeout', '10',
+    '--retries', '1', '--extractor-retries', '1', $url
+  ];
+}
+
+function parseYtDlpValidationOutput($output) {
+  $metadata = json_decode(trim((string)$output), true);
+  if (!is_array($metadata) || empty($metadata['id'])) return null;
+
+  $type = (string)($metadata['_type'] ?? 'video');
+  $hasMedia = !empty($metadata['url']) || !empty($metadata['formats']) || !empty($metadata['requested_formats']);
+  if (in_array($type, ['playlist', 'multi_video'], true)) {
+    $hasMedia = isset($metadata['entries']) && is_array($metadata['entries']) && count($metadata['entries']) > 0;
+  }
+  if (!$hasMedia) return null;
+
+  $extractor = trim((string)($metadata['extractor_key'] ?? $metadata['extractor'] ?? 'yt-dlp'));
+  if (!preg_match('/^[a-z0-9 _.-]{1,80}$/i', $extractor)) $extractor = 'yt-dlp';
+  return ['extractor' => $extractor];
+}
+
+function formatExtractorName($extractor) {
+  $normalized = strtolower(preg_replace('/[^a-z0-9]/i', '', $extractor));
+  if (str_starts_with($normalized, 'youtube')) return 'YouTube';
+  if ($normalized === 'generic') return 'yt-dlp';
+  return $extractor;
+}
+
+function urlValidationCachePath($url) {
+  return URL_VALIDATION_CACHE_DIR . DIRECTORY_SEPARATOR . hash('sha256', $url) . '.json';
+}
+
+function readUrlValidationCache($url) {
+  $path = urlValidationCachePath($url);
+  if (!is_file($path)) return null;
+  $result = json_decode((string)file_get_contents($path), true);
+  if (!is_array($result) || !isset($result['valid'], $result['message'])) return null;
+  $cacheSeconds = $result['valid'] ? URL_VALIDATION_CACHE_SECONDS : min(60, URL_VALIDATION_CACHE_SECONDS);
+  return filemtime($path) < time() - $cacheSeconds ? null : $result;
+}
+
+function writeUrlValidationCache($url, $result) {
+  if (!is_dir(URL_VALIDATION_CACHE_DIR) && !@mkdir(URL_VALIDATION_CACHE_DIR, 0775, true) && !is_dir(URL_VALIDATION_CACHE_DIR)) return;
+  $path = urlValidationCachePath($url);
+  $temporaryPath = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
+  if (file_put_contents($temporaryPath, json_encode($result), LOCK_EX) !== false) rename($temporaryPath, $path);
+  else @unlink($temporaryPath);
+}
+
+function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = true) {
+  $target = validatePublicUrlTarget($url, $resolver);
+  if (!$target['valid']) return $target;
+  $url = $target['url'];
+
+  if (!ensureRuntimeDirs()) return invalidUrlResult('URL validation is temporarily unavailable.');
+  if ($useCache) {
+    $cached = readUrlValidationCache($url);
+    if ($cached !== null) return $cached;
+  }
+
+  $lockHandle = @fopen(URL_VALIDATION_LOCK, 'c');
+  if ($lockHandle === false || !flock($lockHandle, LOCK_EX | LOCK_NB)) {
+    if (is_resource($lockHandle)) fclose($lockHandle);
+    return invalidUrlResult('The URL checker is busy. Try again in a moment.');
+  }
+
+  if ($useCache) {
+    $cached = readUrlValidationCache($url);
+    if ($cached !== null) {
+      flock($lockHandle, LOCK_UN);
+      fclose($lockHandle);
+      return $cached;
+    }
+  }
+
+  $command = buildYtDlpValidationCommand($url);
+  $execution = $runner === null
+    ? executeCommand($command, URL_VALIDATION_TIMEOUT)
+    : $runner($command, URL_VALIDATION_TIMEOUT);
+  $metadata = ($execution['exitCode'] ?? 1) === 0
+    ? parseYtDlpValidationOutput($execution['stdout'] ?? '')
+    : null;
+
+  if (!empty($execution['timedOut'])) {
+    $result = invalidUrlResult('The media site took too long to validate. Try again.');
+  }
+  elseif ($metadata === null) {
+    $result = invalidUrlResult('yt-dlp could not find downloadable media at this URL.');
+  }
+  else {
+    $extractorName = formatExtractorName($metadata['extractor']);
+    $result = [
+      'valid' => true,
+      'message' => 'Supported by ' . $extractorName . '.',
+      'extractor' => $metadata['extractor']
+    ];
+  }
+
+  if ($useCache) writeUrlValidationCache($url, $result);
+  flock($lockHandle, LOCK_UN);
+  fclose($lockHandle);
+  return $result;
+}
+
 function normalizeQueueItems($rawItems) {
   if (is_string($rawItems)) $rawItems = json_decode($rawItems, true);
   if (!is_array($rawItems)) return ['items' => [], 'errors' => ['The queue payload is invalid.']];
@@ -102,9 +331,8 @@ function normalizeQueueItems($rawItems) {
     $number = $index + 1;
     $url = trim((string)($rawItem['url'] ?? ''));
     $mode = strtolower(trim((string)($rawItem['mode'] ?? 'base')));
-    if (!filter_var($url, FILTER_VALIDATE_URL) || !in_array(strtolower((string)parse_url($url, PHP_URL_SCHEME)), ['http', 'https'], true)) {
-      $errors[] = "URL $number is invalid.";
-    }
+    $urlValidation = validateUrlStructure($url);
+    if (!$urlValidation['valid']) $errors[] = "URL $number: " . $urlValidation['message'];
     if (!in_array($mode, VALID_MODES, true)) $errors[] = "URL $number has an invalid download choice.";
     $items[] = ['url' => $url, 'mode' => $mode];
   }
@@ -124,6 +352,20 @@ function enqueueDownloads($rawItems) {
   $normalized = normalizeQueueItems($rawItems);
   if (!empty($normalized['errors'])) {
     sendJsonResponse(2, implode(' ', $normalized['errors']));
+    return;
+  }
+
+  $validationResults = [];
+  $validationErrors = [];
+  foreach ($normalized['items'] as $index => $item) {
+    $cacheKey = hash('sha256', $item['url']);
+    if (!isset($validationResults[$cacheKey])) $validationResults[$cacheKey] = validateMediaUrl($item['url']);
+    if (!$validationResults[$cacheKey]['valid']) {
+      $validationErrors[] = 'URL ' . ($index + 1) . ': ' . $validationResults[$cacheKey]['message'];
+    }
+  }
+  if (!empty($validationErrors)) {
+    sendJsonResponse(2, implode(' ', $validationErrors));
     return;
   }
 
@@ -162,9 +404,11 @@ function failCreatedJobs($jobs, $message) {
 function createJobId() { return bin2hex(random_bytes(12)); }
 
 function ensureRuntimeDirs() {
-  foreach ([TEMP_DIR, FINAL_DIR, JOB_DIR, WORK_DIR] as $dir) {
-    if (!is_dir($dir)) mkdir($dir, 0775, true);
+  $ready = true;
+  foreach ([TEMP_DIR, FINAL_DIR, JOB_DIR, WORK_DIR, URL_VALIDATION_CACHE_DIR] as $dir) {
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) $ready = false;
   }
+  return $ready;
 }
 
 function getJobPath($jobId) {
@@ -396,7 +640,7 @@ function buildYtDlpCommand($url, $mode, $workDir) {
   return $command;
 }
 
-function executeCommand($command) {
+function executeCommand($command, $timeoutSeconds = null) {
   $stdoutFile = tmpfile();
   $stderrFile = tmpfile();
   if ($stdoutFile === false || $stderrFile === false) {
@@ -407,21 +651,46 @@ function executeCommand($command) {
 
   // File-backed output prevents a verbose downloader from filling one pipe while
   // PHP is blocked reading the other one.
-  $process = proc_open($command, [['pipe', 'r'], $stdoutFile, $stderrFile], $pipes);
+  $process = @proc_open($command, [['pipe', 'r'], $stdoutFile, $stderrFile], $pipes);
   if ($process === false) {
     fclose($stdoutFile);
     fclose($stderrFile);
     return ['exitCode' => 1, 'stderr' => 'Failed to open process.'];
   }
   fclose($pipes[0]);
-  $exitCode = proc_close($process);
+  $timedOut = false;
+  $observedExitCode = null;
+  if ($timeoutSeconds === null) {
+    $exitCode = proc_close($process);
+  }
+  else {
+    $deadline = microtime(true) + max(1, (int)$timeoutSeconds);
+    while (true) {
+      $status = proc_get_status($process);
+      if (!$status['running']) {
+        $observedExitCode = $status['exitcode'];
+        break;
+      }
+      if (microtime(true) >= $deadline) {
+        $timedOut = true;
+        proc_terminate($process);
+        usleep(250000);
+        $status = proc_get_status($process);
+        if ($status['running']) proc_terminate($process, 9);
+        break;
+      }
+      usleep(100000);
+    }
+    $closedExitCode = proc_close($process);
+    $exitCode = $timedOut ? 124 : ($observedExitCode !== null && $observedExitCode >= 0 ? $observedExitCode : $closedExitCode);
+  }
   rewind($stdoutFile);
   rewind($stderrFile);
   $stdout = stream_get_contents($stdoutFile);
   $stderr = stream_get_contents($stderrFile);
   fclose($stdoutFile);
   fclose($stderrFile);
-  return ['exitCode' => $exitCode, 'stdout' => $stdout, 'stderr' => $stderr];
+  return ['exitCode' => $exitCode, 'stdout' => $stdout, 'stderr' => $stderr, 'timedOut' => $timedOut];
 }
 
 function getVideoFiles($directory) {
@@ -556,7 +825,13 @@ if (PHP_SAPI === 'cli') {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   if (isset($_POST['file'])) { echo deleteFile($_POST['file']) ? 'true' : 'false'; }
-  elseif (isset($_POST['url'])) { echo filter_var($_POST['url'], FILTER_VALIDATE_URL) ? 'true' : 'false'; }
+  elseif (isset($_POST['validateUrl'])) {
+    $validation = validateMediaUrl($_POST['validateUrl']);
+    sendJsonResponse($validation['valid'] ? 0 : 2, $validation['message'], [
+      'valid' => $validation['valid'],
+      'extractor' => $validation['extractor'] ?? null
+    ]);
+  }
   elseif (isset($_POST['queue'])) { enqueueDownloads($_POST['queue']); }
   elseif (isset($_POST['download'])) { enqueueDownloads(legacyQueueItem()); }
   else { sendJsonResponse(2, 'Invalid Request'); }

@@ -7,6 +7,8 @@ The app runs in Docker and includes PHP, Apache, `yt-dlp`, Deno for YouTube's Ja
 ## Features
 
 - Multi-URL queue with a separate output choice for every URL
+- Inline URL checks that confirm yt-dlp can identify downloadable media before queueing
+- Server-side rejection of credentials, direct IPs, reserved hostnames, nonstandard ports, and private DNS targets
 - Sequential background processing that protects the host from download bursts
 - YouTube and other supported playlist downloads (up to 50 items by default)
 - Recent downloads list with play, save, delete, and refresh actions
@@ -60,6 +62,8 @@ The default configuration works for local use. These environment variables can b
 | `DOWNLOADER_REENCODE_MAX_SECONDS` | `7200` | Maximum source duration for H264 re-encode |
 | `DOWNLOADER_MAX_BATCH_ITEMS` | `20` | Maximum URLs accepted in one queue submission |
 | `DOWNLOADER_PLAYLIST_MAX_ITEMS` | `50` | Maximum items downloaded from one playlist |
+| `DOWNLOADER_URL_VALIDATION_TIMEOUT` | `25` | Maximum seconds allowed for a yt-dlp compatibility check |
+| `DOWNLOADER_URL_VALIDATION_CACHE_SECONDS` | `600` | How long successful compatibility checks are reused |
 | `DOWNLOADER_OUTPUT_TEMPLATE` | `%(playlist_index\|)s%(playlist_index& - \|)s%(title).180B [%(id)s].%(ext)s` | `yt-dlp` output filename template |
 | `DOWNLOADER_TRANSCRIBER_URL` | `http://downloader-transcriber:8000` | Internal transcription service URL |
 | `DOWNLOADER_TRANSCRIPTION_TIMEOUT` | `14400` | Maximum seconds allowed for one transcription request |
@@ -159,7 +163,9 @@ The default transcription model is downloaded while its Docker image is built, s
 
 ## Security Notes
 
-This project is intended for personal or trusted-user deployments. It does not include authentication, rate limiting, account management, quota controls, or multi-user isolation. Put it behind an access-controlled proxy or private network if it is reachable from the internet.
+This project is intended for personal or trusted-user deployments. It does not include authentication, account management, quota controls, or multi-user isolation. Put it behind an access-controlled proxy or private network if it is reachable from the internet.
+
+URL validation is deliberately performed on the server as well as in the browser. The server accepts only standard HTTP(S) service URLs that resolve exclusively to public addresses, then runs a time-limited, metadata-only yt-dlp extraction before a job can enter the queue. Expensive compatibility checks are serialized and briefly cached; these safeguards reduce misuse but are not a substitute for authentication or network-level egress controls on an untrusted public deployment.
 
 Only download media that you have the right to access and store. Site support, format availability, and download behavior depend on `yt-dlp` and the source platform.
 
