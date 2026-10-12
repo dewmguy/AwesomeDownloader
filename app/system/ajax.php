@@ -1,5 +1,7 @@
 <?php // ajax.php
 
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
 error_reporting(E_ALL);
 
 define('TEMP_DIR', getenv('DOWNLOADER_TEMP_DIR') ?: '/var/www/html/temp');

@@ -73,5 +73,6 @@ checkFrontend(str_contains($html, 'class="eldritch-low"') && str_contains($html,
 checkFrontend(str_contains($dockerfile, '<Directory "/var/www/html/download">') && str_contains($dockerfile, '<Directory "/var/www/html/temp">'), 'Runtime storage is not blocked from direct Apache access.');
 checkFrontend(str_contains($dockerfile, 'CMD ["start-downloader"]'), 'The cleanup-enabled container command is missing.');
 checkFrontend(str_contains($entrypoint, 'php /var/www/html/system/ajax.php cleanup') && str_contains($entrypoint, 'DOWNLOADER_CLEANUP_INTERVAL_SECONDS:-900'), 'The periodic retention cleanup is missing.');
+checkFrontend(str_contains($entrypoint, 'chown www-data:www-data "$runtime_dir"') && str_contains($entrypoint, '/var/www/html/temp/files'), 'Runtime metadata directories are not prepared for the Apache worker.');
 
 echo "Frontend tests passed.\n";
