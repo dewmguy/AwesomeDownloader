@@ -8,7 +8,15 @@ ARG POT_PROVIDER_VERSION=1.3.2
 ARG POT_PROVIDER_SHA256=d51cf1c54e487137df749bd8778cceaa62304e6c5054c955b95f028f93ad6d57
 
 RUN echo "ServerName localhost" > /etc/apache2/conf-available/servername.conf && \
-    a2enconf servername
+    printf '%s\n' \
+      '<Directory "/var/www/html/download">' \
+      '  Require all denied' \
+      '</Directory>' \
+      '<Directory "/var/www/html/temp">' \
+      '  Require all denied' \
+      '</Directory>' \
+      > /etc/apache2/conf-available/downloader-private-storage.conf && \
+    a2enconf servername downloader-private-storage
 
 RUN set -eux; \
     apt-get update; \
@@ -41,3 +49,8 @@ RUN set -eux; \
       > /etc/yt-dlp.conf; \
     apt-get purge -y --auto-remove unzip; \
     rm -rf /var/lib/apt/lists/*
+
+COPY docker/start-downloader.sh /usr/local/bin/start-downloader
+RUN chmod 0755 /usr/local/bin/start-downloader
+
+CMD ["start-downloader"]

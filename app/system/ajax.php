@@ -6,9 +6,11 @@ define('TEMP_DIR', getenv('DOWNLOADER_TEMP_DIR') ?: '/var/www/html/temp');
 define('FINAL_DIR', getenv('DOWNLOADER_FINAL_DIR') ?: '/var/www/html/download');
 define('JOB_DIR', TEMP_DIR . '/jobs');
 define('WORK_DIR', TEMP_DIR . '/work');
+define('FILE_METADATA_DIR', TEMP_DIR . '/files');
 define('QUEUE_LOCK', TEMP_DIR . '/queue.lock');
 define('URL_VALIDATION_CACHE_DIR', TEMP_DIR . '/url-validation');
 define('URL_VALIDATION_LOCK', TEMP_DIR . '/url-validation.lock');
+define('CLEANUP_LOCK', TEMP_DIR . '/cleanup.lock');
 define('GIF_MAX_SECONDS', (int)(getenv('DOWNLOADER_GIF_MAX_SECONDS') ?: 600));
 define('REENCODE_MAX_SECONDS', (int)(getenv('DOWNLOADER_REENCODE_MAX_SECONDS') ?: 7200));
 define('MAX_BATCH_ITEMS', (int)(getenv('DOWNLOADER_MAX_BATCH_ITEMS') ?: 20));
@@ -16,21 +18,135 @@ define('PLAYLIST_MAX_ITEMS', (int)(getenv('DOWNLOADER_PLAYLIST_MAX_ITEMS') ?: 50
 define('URL_MAX_LENGTH', 2048);
 define('URL_VALIDATION_TIMEOUT', max(5, (int)(getenv('DOWNLOADER_URL_VALIDATION_TIMEOUT') ?: 25)));
 define('URL_VALIDATION_CACHE_SECONDS', max(30, (int)(getenv('DOWNLOADER_URL_VALIDATION_CACHE_SECONDS') ?: 600)));
+define('URL_VALIDATION_CACHE_VERSION', 2);
 define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://downloader-transcriber:8000', '/'));
 define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: '/work', '/'));
 define('TRANSCRIPTION_TIMEOUT', (int)(getenv('DOWNLOADER_TRANSCRIPTION_TIMEOUT') ?: 14400));
+define('CONTENT_RETENTION_SECONDS', 72 * 60 * 60);
+define('VISITOR_COOKIE_NAME', 'awesome_downloader_visitor');
 define('SUPPORTED_EXTENSIONS', ['mp3', 'mp4', 'gif', 'webm', 'txt']);
 define('ENCODE_EXTENSIONS', ['mp4', 'mov', 'mkv', 'avi', 'flv', 'webm']);
 define('VALID_MODES', ['base', 'h264', 'gif', 'mp3', 'transcribe']);
 define('OUTPUT_TEMPLATE', getenv('DOWNLOADER_OUTPUT_TEMPLATE') ?: '%(playlist_index|)s%(playlist_index& - |)s%(title).180B [%(id)s].%(ext)s');
 
-function listDownloads() {
-  $files = getFilteredFiles(FINAL_DIR, SUPPORTED_EXTENSIONS);
-  if (!empty($files)) {
-    usort($files, fn($a, $b) => filemtime(FINAL_DIR . DIRECTORY_SEPARATOR . $b) - filemtime(FINAL_DIR . DIRECTORY_SEPARATOR . $a));
-    echo implode('', array_map(fn($file) => formatFileListItem($file), $files));
+function base64UrlEncode($bytes) {
+  return rtrim(strtr(base64_encode($bytes), '+/', '-_'), '=');
+}
+
+function isValidVisitorToken($token) {
+  return is_string($token) && preg_match('/^[A-Za-z0-9_-]{43}$/', $token);
+}
+
+function visitorIdForToken($token) {
+  return hash('sha256', $token);
+}
+
+function requestIsSecure() {
+  if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') return true;
+  $forwardedProtocol = strtolower(trim(explode(',', (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))[0]));
+  return $forwardedProtocol === 'https';
+}
+
+function setVisitorCookieUntil($token, $expiresAt) {
+  if (PHP_SAPI === 'cli' || headers_sent()) return;
+  setcookie(VISITOR_COOKIE_NAME, $token, [
+    'expires' => min((int)$expiresAt, time() + CONTENT_RETENTION_SECONDS),
+    'path' => '/',
+    'secure' => requestIsSecure(),
+    'httponly' => true,
+    'samesite' => 'Lax'
+  ]);
+}
+
+function getVisitorToken($refreshCookie = false) {
+  $token = $_COOKIE[VISITOR_COOKIE_NAME] ?? null;
+  $isNew = !isValidVisitorToken($token);
+  if ($isNew) $token = base64UrlEncode(random_bytes(32));
+  if ($isNew || $refreshCookie) setVisitorCookieUntil($token, time() + CONTENT_RETENTION_SECONDS);
+  return $token;
+}
+
+function getCurrentVisitorId($refreshCookie = false) {
+  return visitorIdForToken(getVisitorToken($refreshCookie));
+}
+
+function getFileMetadataPath($fileId) {
+  if (!preg_match('/^[a-f0-9]{24}$/', (string)$fileId)) return null;
+  return FILE_METADATA_DIR . DIRECTORY_SEPARATOR . $fileId . '.json';
+}
+
+function readFileMetadata($fileId) {
+  $path = getFileMetadataPath($fileId);
+  if ($path === null || !is_file($path)) return null;
+  $record = json_decode((string)file_get_contents($path), true);
+  return is_array($record) && ($record['id'] ?? null) === $fileId ? $record : null;
+}
+
+function writeFileMetadata($record) {
+  $path = getFileMetadataPath($record['id'] ?? null);
+  if ($path === null) return false;
+  if (!is_dir(FILE_METADATA_DIR) && !@mkdir(FILE_METADATA_DIR, 0775, true) && !is_dir(FILE_METADATA_DIR)) return false;
+  $temporaryPath = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
+  if (file_put_contents($temporaryPath, json_encode($record, JSON_PRETTY_PRINT), LOCK_EX) === false) {
+    @unlink($temporaryPath);
+    return false;
   }
-  else { echo "<li>No downloads found.</li>"; }
+  if (rename($temporaryPath, $path)) return true;
+  @unlink($temporaryPath);
+  return false;
+}
+
+function getRecordFilePath($record) {
+  $storageName = basename((string)($record['storageName'] ?? ''));
+  if (!preg_match('/^[a-f0-9]{24}\.[a-z0-9]{2,5}$/', $storageName)) return null;
+  return FINAL_DIR . DIRECTORY_SEPARATOR . $storageName;
+}
+
+function listFileMetadata() {
+  $records = [];
+  foreach (glob(FILE_METADATA_DIR . '/*.json') ?: [] as $path) {
+    $record = json_decode((string)file_get_contents($path), true);
+    if (is_array($record) && isset($record['id'])) $records[] = $record;
+  }
+  return $records;
+}
+
+function getVisibleDownloads($ownerId, $now = null) {
+  $now = $now ?? time();
+  $private = [];
+  $public = [];
+  foreach (listFileMetadata() as $record) {
+    $filePath = getRecordFilePath($record);
+    if ($filePath === null || !is_file($filePath) || (int)($record['expiresAt'] ?? 0) <= $now) continue;
+    if (!empty($record['public'])) $public[] = $record;
+    elseif (hash_equals((string)($record['ownerId'] ?? ''), (string)$ownerId)) $private[] = $record;
+  }
+  $newestFirst = fn($a, $b) => ((int)($b['publishedAt'] ?? $b['createdAt'] ?? 0)) <=> ((int)($a['publishedAt'] ?? $a['createdAt'] ?? 0));
+  usort($private, $newestFirst);
+  usort($public, $newestFirst);
+  return ['private' => $private, 'public' => $public];
+}
+
+function listDownloads() {
+  ensureRuntimeDirs();
+  purgeExpiredContent();
+  $token = getVisitorToken();
+  $ownerId = visitorIdForToken($token);
+  $downloads = getVisibleDownloads($ownerId);
+  if (!empty($downloads['private'])) {
+    $latestExpiry = max(array_map(fn($record) => (int)$record['expiresAt'], $downloads['private']));
+    setVisitorCookieUntil($token, $latestExpiry);
+  }
+  sendJsonResponse(0, 'Downloads loaded.', [
+    'privateHtml' => empty($downloads['private'])
+      ? '<li class="empty-downloads">No private downloads yet.</li>'
+      : implode('', array_map(fn($record) => formatFileListItem($record, true), $downloads['private'])),
+    'publicHtml' => empty($downloads['public'])
+      ? '<li class="empty-downloads">No public downloads right now.</li>'
+      : implode('', array_map(fn($record) => formatFileListItem($record, false), $downloads['public'])),
+    'privateCount' => count($downloads['private']),
+    'publicCount' => count($downloads['public'])
+  ]);
 }
 
 function getFilteredFiles($dir, $extensions) {
@@ -44,24 +160,52 @@ function isValidFile($dir, $file, $extensions) {
   return !is_dir($dir . DIRECTORY_SEPARATOR . $file) && in_array($ext, $extensions, true);
 }
 
-function formatFileListItem($file) {
-  $escapedFile = htmlspecialchars($file, ENT_QUOTES);
-  $encodedFile = rawurlencode($file);
-  $previewClass = strtolower(pathinfo($file, PATHINFO_EXTENSION)) === 'txt' ? ' transcript' : '';
+function formatFileListItem($record, $canManage = false) {
+  $fileId = htmlspecialchars((string)$record['id'], ENT_QUOTES);
+  $fileName = htmlspecialchars((string)$record['name'], ENT_QUOTES);
+  $previewClass = strtolower(pathinfo((string)$record['name'], PATHINFO_EXTENSION)) === 'txt' ? ' transcript' : '';
+  $actions = sprintf(
+    '<a class="file-action save-file" download href="/system/ajax.php?media=%1$s&amp;download=1" aria-label="Save %2$s" title="Save to your device"><i class="fa-solid fa-download" aria-hidden="true"></i><span>Save</span></a>',
+    $fileId,
+    $fileName
+  );
+  if ($canManage) {
+    $actions .= sprintf(
+      '<button type="button" class="file-action publish" data-file-id="%1$s" aria-label="Make %2$s public" title="Make public for 72 hours"><i class="fa-solid fa-earth-americas" aria-hidden="true"></i><span>Public</span></button>' .
+      '<button type="button" class="file-action delete" data-file-id="%1$s" aria-label="Delete %2$s" title="Delete"><i class="fa-solid fa-trash" aria-hidden="true"></i></button>',
+      $fileId,
+      $fileName
+    );
+  }
   return sprintf(
-    '<li><a target="_blank" download href="/download/%1$s">' .
-    '<i class="link fa-solid fa-floppy-disk"></i></a> ' .
-    '<i data-file="%2$s" class="link delete fa-solid fa-trash"></i>' .
-    '<p class="link play%3$s" data-file="%2$s">%2$s</p></li>',
-    $encodedFile,
-    $escapedFile,
-    $previewClass
+    '<li data-file-id="%1$s"><button type="button" class="link play%3$s" data-file-id="%1$s" data-file-name="%2$s">%2$s</button><span class="file-actions">%4$s</span></li>',
+    $fileId,
+    $fileName,
+    $previewClass,
+    $actions
   );
 }
 
-function deleteFile($fileName) {
-  $filePath = FINAL_DIR . DIRECTORY_SEPARATOR . basename($fileName);
-  return file_exists($filePath) && unlink($filePath);
+function deleteOwnedFile($fileId, $ownerId) {
+  $record = readFileMetadata($fileId);
+  if ($record === null || !empty($record['public']) || !hash_equals((string)($record['ownerId'] ?? ''), (string)$ownerId)) return false;
+  $filePath = getRecordFilePath($record);
+  if ($filePath !== null && is_file($filePath) && !unlink($filePath)) return false;
+  $metadataPath = getFileMetadataPath($fileId);
+  return $metadataPath !== null && (!is_file($metadataPath) || unlink($metadataPath));
+}
+
+function publishOwnedFile($fileId, $ownerId, $now = null) {
+  $now = $now ?? time();
+  $record = readFileMetadata($fileId);
+  if ($record === null || !empty($record['public']) || !hash_equals((string)($record['ownerId'] ?? ''), (string)$ownerId)) return false;
+  $filePath = getRecordFilePath($record);
+  if ($filePath === null || !is_file($filePath)) return false;
+  $record['public'] = true;
+  $record['ownerId'] = null;
+  $record['publishedAt'] = $now;
+  $record['expiresAt'] = $now + CONTENT_RETENTION_SECONDS;
+  return writeFileMetadata($record);
 }
 
 function durationToSeconds($duration) {
@@ -231,15 +375,15 @@ function parseYtDlpValidationOutput($output) {
   }
   if (!$hasMedia) return null;
 
-  $extractor = trim((string)($metadata['extractor_key'] ?? $metadata['extractor'] ?? 'yt-dlp'));
-  if (!preg_match('/^[a-z0-9 _.-]{1,80}$/i', $extractor)) $extractor = 'yt-dlp';
+  $extractor = trim((string)($metadata['extractor_key'] ?? $metadata['extractor'] ?? 'media'));
+  if (!preg_match('/^[a-z0-9 _.-]{1,80}$/i', $extractor)) $extractor = 'media';
   return ['extractor' => $extractor];
 }
 
 function formatExtractorName($extractor) {
   $normalized = strtolower(preg_replace('/[^a-z0-9]/i', '', $extractor));
   if (str_starts_with($normalized, 'youtube')) return 'YouTube';
-  if ($normalized === 'generic') return 'yt-dlp';
+  if (in_array($normalized, ['generic', 'media'], true)) return 'this media service';
   return $extractor;
 }
 
@@ -251,7 +395,7 @@ function readUrlValidationCache($url) {
   $path = urlValidationCachePath($url);
   if (!is_file($path)) return null;
   $result = json_decode((string)file_get_contents($path), true);
-  if (!is_array($result) || !isset($result['valid'], $result['message'])) return null;
+  if (!is_array($result) || ($result['cacheVersion'] ?? 0) !== URL_VALIDATION_CACHE_VERSION || !isset($result['valid'], $result['message'])) return null;
   $cacheSeconds = $result['valid'] ? URL_VALIDATION_CACHE_SECONDS : min(60, URL_VALIDATION_CACHE_SECONDS);
   return filemtime($path) < time() - $cacheSeconds ? null : $result;
 }
@@ -260,6 +404,7 @@ function writeUrlValidationCache($url, $result) {
   if (!is_dir(URL_VALIDATION_CACHE_DIR) && !@mkdir(URL_VALIDATION_CACHE_DIR, 0775, true) && !is_dir(URL_VALIDATION_CACHE_DIR)) return;
   $path = urlValidationCachePath($url);
   $temporaryPath = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
+  $result['cacheVersion'] = URL_VALIDATION_CACHE_VERSION;
   if (file_put_contents($temporaryPath, json_encode($result), LOCK_EX) !== false) rename($temporaryPath, $path);
   else @unlink($temporaryPath);
 }
@@ -302,13 +447,13 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
     $result = invalidUrlResult('The media site took too long to validate. Try again.');
   }
   elseif ($metadata === null) {
-    $result = invalidUrlResult('yt-dlp could not find downloadable media at this URL.');
+    $result = invalidUrlResult('This link does not contain media this downloader can process.');
   }
   else {
     $extractorName = formatExtractorName($metadata['extractor']);
     $result = [
       'valid' => true,
-      'message' => 'Supported by ' . $extractorName . '.',
+      'message' => $extractorName === 'this media service' ? 'Verified media link.' : 'Verified ' . $extractorName . ' link.',
       'extractor' => $metadata['extractor']
     ];
   }
@@ -347,8 +492,9 @@ function legacyQueueItem() {
   return [['url' => $_POST['download'] ?? '', 'mode' => $mode]];
 }
 
-function enqueueDownloads($rawItems) {
+function enqueueDownloads($rawItems, $ownerId = null) {
   ensureRuntimeDirs();
+  $ownerId = $ownerId ?? getCurrentVisitorId(true);
   $normalized = normalizeQueueItems($rawItems);
   if (!empty($normalized['errors'])) {
     sendJsonResponse(2, implode(' ', $normalized['errors']));
@@ -375,6 +521,7 @@ function enqueueDownloads($rawItems) {
     $job = [
       'id' => $jobId,
       'url' => $item['url'],
+      'ownerId' => $ownerId,
       'mode' => $item['mode'],
       'state' => 'queued',
       'message' => 'Waiting in queue.',
@@ -405,7 +552,7 @@ function createJobId() { return bin2hex(random_bytes(12)); }
 
 function ensureRuntimeDirs() {
   $ready = true;
-  foreach ([TEMP_DIR, FINAL_DIR, JOB_DIR, WORK_DIR, URL_VALIDATION_CACHE_DIR] as $dir) {
+  foreach ([TEMP_DIR, FINAL_DIR, JOB_DIR, WORK_DIR, FILE_METADATA_DIR, URL_VALIDATION_CACHE_DIR] as $dir) {
     if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) $ready = false;
   }
   return $ready;
@@ -459,16 +606,20 @@ function formatJobForClient($job) {
   ];
 }
 
-function sendJobStatus($jobId) {
+function jobBelongsToOwner($job, $ownerId) {
+  return isset($job['ownerId']) && hash_equals((string)$job['ownerId'], (string)$ownerId);
+}
+
+function sendJobStatus($jobId, $ownerId) {
   $job = readJob($jobId);
-  if ($job === null) {
+  if ($job === null || !jobBelongsToOwner($job, $ownerId)) {
     sendJsonResponse(2, 'Job not found.');
     return;
   }
   sendJsonResponse(0, $job['message'] ?? 'Job status loaded.', ['job' => formatJobForClient($job)]);
 }
 
-function sendJobsStatus($jobIds) {
+function sendJobsStatus($jobIds, $ownerId) {
   $ids = array_values(array_unique(array_filter(explode(',', $jobIds), fn($id) => preg_match('/^[a-f0-9]{24}$/', $id))));
   if (empty($ids) || count($ids) > MAX_BATCH_ITEMS * 5) {
     sendJsonResponse(2, 'The job list is invalid.');
@@ -477,7 +628,7 @@ function sendJobsStatus($jobIds) {
   $jobs = [];
   foreach ($ids as $id) {
     $job = readJob($id);
-    if ($job !== null) $jobs[] = formatJobForClient($job);
+    if ($job !== null && jobBelongsToOwner($job, $ownerId)) $jobs[] = formatJobForClient($job);
   }
   sendJsonResponse(0, 'Queue status loaded.', ['jobs' => $jobs]);
 }
@@ -532,7 +683,7 @@ function runJob($jobId) {
   }
   if (($job['state'] ?? '') !== 'queued') return 0;
 
-  updateJob($jobId, ['state' => 'running', 'message' => 'Starting download.']);
+  updateJob($jobId, ['state' => 'running', 'message' => 'Starting processing.']);
   $workDir = createWorkDir($jobId);
   if ($workDir === null) {
     failJob($jobId, null, 'Failed to create temporary work directory.');
@@ -546,6 +697,11 @@ function runJob($jobId) {
 function processDownload($jobId, $job, $workDir) {
   $url = $job['url'];
   $mode = getJobMode($job);
+  $ownerId = (string)($job['ownerId'] ?? '');
+  if (!preg_match('/^[a-f0-9]{64}$/', $ownerId)) {
+    failJob($jobId, null, 'This job has no valid owner.');
+    return false;
+  }
 
   if (in_array($mode, ['gif', 'h264'], true)) {
     updateJob($jobId, ['state' => 'checking', 'message' => 'Checking media duration.']);
@@ -564,7 +720,7 @@ function processDownload($jobId, $job, $workDir) {
     }
   }
 
-  updateJob($jobId, ['state' => 'downloading', 'message' => $mode === 'transcribe' ? 'Downloading audio for transcription.' : 'Downloading media or playlist.']);
+  updateJob($jobId, ['state' => 'downloading', 'message' => $mode === 'transcribe' ? 'Retrieving audio for transcription.' : 'Retrieving media or playlist.']);
   $executionResult = executeCommand(buildYtDlpCommand($url, $mode, $workDir));
   if ($executionResult['exitCode'] !== 0) {
     failJob($jobId, $executionResult, 'Download failed.');
@@ -594,17 +750,17 @@ function processDownload($jobId, $job, $workDir) {
   }
 
   updateJob($jobId, ['state' => 'finalizing', 'message' => 'Saving completed files.']);
-  $movedFiles = moveProcessedFiles($workDir, FINAL_DIR);
+  $movedFiles = moveProcessedFiles($workDir, FINAL_DIR, $ownerId);
   if (empty($movedFiles)) {
     failJob($jobId, null, 'No completed files were produced.');
     return false;
   }
-  $noun = $mode === 'transcribe' ? 'transcript' : 'download';
-  $message = count($movedFiles) === 1 ? ucfirst($noun) . ' complete.' : count($movedFiles) . ' ' . $noun . 's complete.';
+  $message = count($movedFiles) === 1 ? 'One file is ready to save.' : count($movedFiles) . ' files are ready to save.';
   updateJob($jobId, [
     'state' => 'complete',
     'message' => $message,
     'outputCount' => count($movedFiles),
+    'outputIds' => array_column($movedFiles, 'id'),
     'completedAt' => time()
   ]);
   return true;
@@ -774,28 +930,183 @@ function transcribeAudioFiles($jobId, $directory) {
   return true;
 }
 
-function uniqueTargetPath($targetDir, $fileName) {
-  $path = $targetDir . DIRECTORY_SEPARATOR . $fileName;
-  if (!file_exists($path)) return $path;
-  $extension = pathinfo($fileName, PATHINFO_EXTENSION);
-  $baseName = pathinfo($fileName, PATHINFO_FILENAME);
-  for ($suffix = 2; $suffix < 1000; $suffix++) {
-    $candidateName = $baseName . ' (' . $suffix . ')' . ($extension === '' ? '' : '.' . $extension);
-    $candidate = $targetDir . DIRECTORY_SEPARATOR . $candidateName;
-    if (!file_exists($candidate)) return $candidate;
-  }
-  return null;
-}
-
-function moveProcessedFiles($sourceDir, $targetDir) {
+function moveProcessedFiles($sourceDir, $targetDir, $ownerId, $now = null) {
+  $now = $now ?? time();
   $moved = [];
   foreach (array_diff(scandir($sourceDir), ['.', '..']) as $file) {
     $sourcePath = $sourceDir . DIRECTORY_SEPARATOR . $file;
     if (!is_file($sourcePath)) continue;
-    $targetPath = uniqueTargetPath($targetDir, $file);
-    if ($targetPath !== null && rename($sourcePath, $targetPath)) $moved[] = basename($targetPath);
+    $extension = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+    if (!in_array($extension, SUPPORTED_EXTENSIONS, true)) continue;
+    $fileId = bin2hex(random_bytes(12));
+    $storageName = $fileId . '.' . $extension;
+    $targetPath = $targetDir . DIRECTORY_SEPARATOR . $storageName;
+    $record = [
+      'id' => $fileId,
+      'storageName' => $storageName,
+      'name' => basename($file),
+      'ownerId' => $ownerId,
+      'public' => false,
+      'createdAt' => $now,
+      'expiresAt' => $now + CONTENT_RETENTION_SECONDS
+    ];
+    if (!rename($sourcePath, $targetPath)) continue;
+    if (!writeFileMetadata($record)) {
+      @rename($targetPath, $sourcePath);
+      continue;
+    }
+    $moved[] = $record;
   }
   return $moved;
+}
+
+function getAccessibleFileRecord($fileId, $ownerId, $now = null) {
+  $now = $now ?? time();
+  $record = readFileMetadata($fileId);
+  if ($record === null || (int)($record['expiresAt'] ?? 0) <= $now) return null;
+  $isOwner = empty($record['public']) && hash_equals((string)($record['ownerId'] ?? ''), (string)$ownerId);
+  if (empty($record['public']) && !$isOwner) return null;
+  $filePath = getRecordFilePath($record);
+  if ($filePath === null || !is_file($filePath)) return null;
+  $record['filePath'] = $filePath;
+  return $record;
+}
+
+function contentTypeForFile($fileName) {
+  return match (strtolower(pathinfo($fileName, PATHINFO_EXTENSION))) {
+    'mp3' => 'audio/mpeg',
+    'mp4' => 'video/mp4',
+    'gif' => 'image/gif',
+    'webm' => 'video/webm',
+    'txt' => 'text/plain; charset=utf-8',
+    default => 'application/octet-stream'
+  };
+}
+
+function contentDispositionHeader($fileName, $forceDownload) {
+  $safeAsciiName = preg_replace('/[^A-Za-z0-9._ -]/', '_', basename($fileName));
+  $safeAsciiName = trim((string)$safeAsciiName, '. ');
+  if ($safeAsciiName === '') $safeAsciiName = 'media-file';
+  $disposition = $forceDownload ? 'attachment' : 'inline';
+  return $disposition . '; filename="' . addcslashes($safeAsciiName, '"\\') . '"; filename*=UTF-8\'\'' . rawurlencode(basename($fileName));
+}
+
+function serveMediaFile($fileId, $ownerId, $forceDownload = false) {
+  purgeExpiredContent();
+  $record = getAccessibleFileRecord($fileId, $ownerId);
+  if ($record === null) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'File not found.';
+    return;
+  }
+
+  $path = $record['filePath'];
+  $size = filesize($path);
+  if ($size === 0) {
+    http_response_code(200);
+    header('Content-Type: ' . contentTypeForFile($record['name']));
+    header('Content-Disposition: ' . contentDispositionHeader($record['name'], $forceDownload));
+    header('Cache-Control: private, no-store');
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Length: 0');
+    return;
+  }
+  $start = 0;
+  $end = max(0, $size - 1);
+  $status = 200;
+  $range = (string)($_SERVER['HTTP_RANGE'] ?? '');
+  if ($range !== '') {
+    if (!preg_match('/^bytes=(\d*)-(\d*)$/', trim($range), $matches) || ($matches[1] === '' && $matches[2] === '')) {
+      http_response_code(416);
+      header('Content-Range: bytes */' . $size);
+      return;
+    }
+    if ($matches[1] === '') {
+      $suffixLength = min((int)$matches[2], $size);
+      $start = max(0, $size - $suffixLength);
+    }
+    else {
+      $start = (int)$matches[1];
+      if ($matches[2] !== '') $end = min($end, (int)$matches[2]);
+    }
+    if ($start > $end || $start >= $size) {
+      http_response_code(416);
+      header('Content-Range: bytes */' . $size);
+      return;
+    }
+    $status = 206;
+  }
+
+  http_response_code($status);
+  header('Content-Type: ' . contentTypeForFile($record['name']));
+  header('Content-Disposition: ' . contentDispositionHeader($record['name'], $forceDownload));
+  header('Accept-Ranges: bytes');
+  header('Cache-Control: private, no-store');
+  header('X-Content-Type-Options: nosniff');
+  header('Content-Length: ' . ($end - $start + 1));
+  if ($status === 206) header("Content-Range: bytes $start-$end/$size");
+
+  $handle = fopen($path, 'rb');
+  if ($handle === false) return;
+  fseek($handle, $start);
+  $remaining = $end - $start + 1;
+  while ($remaining > 0 && !feof($handle)) {
+    $chunk = fread($handle, min(1024 * 1024, $remaining));
+    if ($chunk === false || $chunk === '') break;
+    echo $chunk;
+    $remaining -= strlen($chunk);
+    if (connection_aborted()) break;
+  }
+  fclose($handle);
+}
+
+function purgeExpiredContent($now = null) {
+  $now = $now ?? time();
+  ensureRuntimeDirs();
+  $lock = @fopen(CLEANUP_LOCK, 'c');
+  if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
+    if (is_resource($lock)) fclose($lock);
+    return ['files' => 0, 'jobs' => 0, 'cache' => 0, 'work' => 0];
+  }
+
+  $removed = ['files' => 0, 'jobs' => 0, 'cache' => 0, 'work' => 0];
+  $knownStorageNames = [];
+  foreach (glob(FILE_METADATA_DIR . '/*.json') ?: [] as $metadataPath) {
+    $record = json_decode((string)file_get_contents($metadataPath), true);
+    $filePath = is_array($record) ? getRecordFilePath($record) : null;
+    $expired = !is_array($record) || (int)($record['expiresAt'] ?? 0) <= $now || $filePath === null;
+    if (!$expired && is_file($filePath)) {
+      $knownStorageNames[basename($filePath)] = true;
+      continue;
+    }
+    if ($filePath !== null && is_file($filePath)) @unlink($filePath);
+    if (@unlink($metadataPath)) $removed['files']++;
+  }
+
+  $cutoff = $now - CONTENT_RETENTION_SECONDS;
+  foreach (getFilteredFiles(FINAL_DIR, SUPPORTED_EXTENSIONS) as $file) {
+    $path = FINAL_DIR . DIRECTORY_SEPARATOR . $file;
+    if (!isset($knownStorageNames[$file]) && filemtime($path) <= $cutoff && @unlink($path)) $removed['files']++;
+  }
+  foreach (glob(JOB_DIR . '/*.json') ?: [] as $path) {
+    $job = json_decode((string)file_get_contents($path), true);
+    $timestamp = is_array($job) ? (int)($job['updatedAt'] ?? $job['createdAt'] ?? 0) : (int)filemtime($path);
+    if ($timestamp <= $cutoff && @unlink($path)) $removed['jobs']++;
+  }
+  foreach (glob(URL_VALIDATION_CACHE_DIR . '/*.json') ?: [] as $path) {
+    if (filemtime($path) <= $cutoff && @unlink($path)) $removed['cache']++;
+  }
+  foreach (glob(WORK_DIR . '/*', GLOB_ONLYDIR) ?: [] as $path) {
+    if (filemtime($path) <= $cutoff) {
+      cleanupWorkDir($path);
+      if (!is_dir($path)) $removed['work']++;
+    }
+  }
+
+  flock($lock, LOCK_UN);
+  fclose($lock);
+  return $removed;
 }
 
 function cleanupWorkDir($directory) {
@@ -819,26 +1130,37 @@ if (PHP_SAPI === 'cli') {
   $command = $argv[1] ?? '';
   if ($command === 'run-queue') exit(runQueue());
   if ($command === 'run-job' && isset($argv[2])) exit(runJob($argv[2]));
+  if ($command === 'cleanup') {
+    echo json_encode(purgeExpiredContent()) . "\n";
+    exit(0);
+  }
   fwrite(STDERR, "Unsupported CLI command.\n");
   exit(1);
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-  if (isset($_POST['file'])) { echo deleteFile($_POST['file']) ? 'true' : 'false'; }
+  if (isset($_POST['deleteFileId'])) {
+    $deleted = deleteOwnedFile($_POST['deleteFileId'], getCurrentVisitorId());
+    sendJsonResponse($deleted ? 0 : 2, $deleted ? 'File permanently deleted.' : 'That private file was not found.');
+  }
+  elseif (isset($_POST['publishFileId'])) {
+    $published = publishOwnedFile($_POST['publishFileId'], getCurrentVisitorId());
+    sendJsonResponse($published ? 0 : 2, $published ? 'File is public for the next 72 hours.' : 'That private file was not found.');
+  }
   elseif (isset($_POST['validateUrl'])) {
     $validation = validateMediaUrl($_POST['validateUrl']);
     sendJsonResponse($validation['valid'] ? 0 : 2, $validation['message'], [
-      'valid' => $validation['valid'],
-      'extractor' => $validation['extractor'] ?? null
+      'valid' => $validation['valid']
     ]);
   }
   elseif (isset($_POST['queue'])) { enqueueDownloads($_POST['queue']); }
   elseif (isset($_POST['download'])) { enqueueDownloads(legacyQueueItem()); }
   else { sendJsonResponse(2, 'Invalid Request'); }
 }
+elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['media'])) { serveMediaFile($_GET['media'], getCurrentVisitorId(), isset($_GET['download'])); }
 elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['refresh']) && $_GET['refresh'] === 'downloads') { listDownloads(); }
-elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['jobs'])) { sendJobsStatus($_GET['jobs']); }
-elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['job'])) { sendJobStatus($_GET['job']); }
+elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['jobs'])) { sendJobsStatus($_GET['jobs'], getCurrentVisitorId()); }
+elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['job'])) { sendJobStatus($_GET['job'], getCurrentVisitorId()); }
 else { sendJsonResponse(2, 'Unsupported Request Method.'); }
 
 ?>

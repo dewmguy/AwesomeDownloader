@@ -9,55 +9,69 @@ function checkFrontend($condition, $message) {
 
 $html = file_get_contents(__DIR__ . '/../app/index.html');
 $css = file_get_contents(__DIR__ . '/../app/system/style.css');
+$dockerfile = file_get_contents(__DIR__ . '/../Dockerfile');
+$entrypoint = file_get_contents(__DIR__ . '/../docker/start-downloader.sh');
 
 checkFrontend(str_contains($html, '<script src="https://kit.fontawesome.com/666b0b7246.js" crossorigin="anonymous"></script>'), 'The required Font Awesome kit is missing.');
+checkFrontend((bool)preg_match('/<h1 class="title">Awesome Media Downloader<\/h1>/', $html), 'The site title is not an h1.');
 
-preg_match_all('/class="fa-brands fa-([a-z0-9-]+)"/', $html, $matches);
-$expectedBrands = [
+preg_match('/<p class="icons icons-featured"[^>]*>([\s\S]*?)<\/p>/', $html, $featuredBlock);
+preg_match_all('/class="fa-brands fa-([a-z0-9-]+)"/', $featuredBlock[1] ?? '', $featuredMatches);
+$featuredBrands = ['youtube', 'vimeo', 'facebook', 'x-twitter', 'instagram', 'tiktok', 'dailymotion', 'twitch', 'reddit-alien', 'soundcloud'];
+checkFrontend($featuredMatches[1] === $featuredBrands, 'The 10 featured brand icons are not directly under the title.');
+
+preg_match('/<p class="icons icons-all"[^>]*>([\s\S]*?)<\/p>/', $html, $allBlock);
+preg_match_all('/class="fa-brands fa-([a-z0-9-]+)"/', $allBlock[1] ?? '', $allMatches);
+$allBrands = [
   'youtube', 'vimeo', 'facebook', 'x-twitter', 'instagram', 'tiktok', 'dailymotion',
   'twitch', 'reddit-alien', 'soundcloud', 'bluesky', 'bandcamp', 'bilibili', 'flickr',
   'pinterest', 'tumblr', 'mixcloud', 'vk', 'snapchat', 'linkedin'
 ];
-checkFrontend($matches[1] === $expectedBrands, 'The supported brand icon bar changed unexpectedly.');
-checkFrontend(str_contains($html, 'fa-solid fa-download'), 'The single-download action is missing its Font Awesome icon.');
-checkFrontend(str_contains($html, "toggleClass('fa-list-check', jobCount > 1)"), 'The multi-job queue icon is not dynamic.');
-checkFrontend(str_contains($html, 'style.css?v=20260903-url-validation'), 'The URL-validation stylesheet is not cache-busted.');
-checkFrontend(str_contains($css, 'grid-template-columns: repeat(10, minmax(0, 1fr));'), 'The desktop brand grid is missing.');
-checkFrontend(str_contains($css, 'grid-template-columns: repeat(5, minmax(0, 1fr));'), 'The mobile brand grid is missing.');
-checkFrontend((bool)preg_match('/<div id="help">[\s\S]*?<p class="icons"[\s\S]*?<\/p>[\s\S]*?<\/div>\s*<\/div>\s*<div id="container">/', $html), 'The brand icons are not contained in the Help dialog.');
-checkFrontend(str_contains($html, 'class="queue-mode-button" aria-haspopup="listbox"'), 'The styled download method picker is missing.');
-checkFrontend(str_contains($html, 'class="queue-mode-option" role="option"'), 'The styled download method options are missing.');
-checkFrontend(str_contains($html, '<input type="hidden" class="queue-mode">'), 'The method picker is missing its queue-value field.');
+checkFrontend($allMatches[1] === $allBrands, 'The Help dialog does not contain all 20 supported brand icons.');
+checkFrontend(str_contains($css, '.icons .fa-reddit-alien::after') && str_contains($css, 'left: -1px;'), 'The Reddit white-background alignment is missing.');
+checkFrontend(str_contains($css, '.icons .fa-vimeo::after') && str_contains($css, 'top: 4px;'), 'The Vimeo white-background alignment is missing.');
+checkFrontend(str_contains($css, '.icons .fa-dailymotion::after') && str_contains($css, 'top: 3px;'), 'The Dailymotion white-background alignment is missing.');
+checkFrontend(str_contains($css, 'height: 1.8rem;') && str_contains($css, 'width: 1.8rem;'), 'The Facebook white background size is incorrect.');
+
+checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing implementation name remains in the page.');
+checkFrontend(str_contains($html, 'style.css?v=20261012-private-downloads'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'class="queue-mode-button" aria-haspopup="listbox"'), 'The styled method picker is missing.');
+checkFrontend(str_contains($html, 'class="queue-mode-option" role="option"'), 'The styled method options are missing.');
 checkFrontend(str_contains($css, 'font-family: "SFMedium", sans-serif;'), 'The method picker font is not explicitly styled.');
-checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 8rem }'), 'The single-row desktop layout still reserves delete-button space.');
-checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 7rem }'), 'The single-row mobile layout still reserves delete-button space.');
-checkFrontend(str_contains($html, "confirm('Remove this URL from the download queue?')"), 'Queue removal is missing its confirmation prompt.');
-checkFrontend(str_contains($html, 'fa-solid fa-trash-can'), 'Queue removal is missing its Font Awesome trash icon.');
-checkFrontend(str_contains($css, '.remove-url:hover, .remove-url:focus-visible'), 'Queue removal is missing its hover treatment.');
-checkFrontend(str_contains($css, 'background: #C33;'), 'Queue removal does not turn red on hover.');
-checkFrontend(str_contains($html, "jobCount > 1 ? 'Download Queue' : 'Download'"), 'The download action label is not job-count aware.');
+checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 8rem }'), 'The single-row desktop layout reserves delete-button space.');
+checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 7rem }'), 'The single-row mobile layout reserves delete-button space.');
+
+checkFrontend(str_contains($html, 'class="url-field-shell"'), 'URL verification is not contained in the field row.');
+checkFrontend(str_contains($html, 'class="url-status idle"'), 'The compact URL status action is missing.');
+checkFrontend(!str_contains($html, 'class="url-validation"'), 'URL validation still adds a second row.');
+checkFrontend(str_contains($css, '.url-field-shell .url-status'), 'The compact URL status is not styled.');
+checkFrontend(str_contains($html, "$('#queueRows').on('paste', '.queue-url'"), 'Pasted URLs are not checked immediately.');
+checkFrontend(str_contains($html, ".prop('readonly', state === 'checking' || state === 'valid')"), 'The URL is not locked while checking and after verification.');
+checkFrontend(str_contains($html, "state === 'valid' ? accessibleMessage + ' Click to edit this URL.'"), 'The verified state does not explain how to edit the locked URL.');
+checkFrontend(str_contains($html, "$.post('/system/ajax.php', { validateUrl: url })"), 'Authoritative URL verification is missing.');
+checkFrontend(str_contains($html, "url === '' || \$input.data('validationState') !== 'valid'"), 'Empty and unverified rows do not block processing.');
+checkFrontend(str_contains($html, "\$input.data('validationState') === 'valid' && !confirm"), 'Only verified queue rows should require removal confirmation.');
+
+checkFrontend(str_contains($html, "jobCount > 1 ? 'Process Queue' : 'Process'"), 'The process action label is not job-count aware.');
+checkFrontend(str_contains($html, 'fa-solid fa-gears'), 'The process action does not have a processing icon.');
+checkFrontend(str_contains($html, '>Save</span> beside a file to download it to your device.'), 'Help does not distinguish processing from saving.');
 checkFrontend(str_contains($html, 'id="copyTranscript"'), 'Transcript playback is missing its copy action.');
-checkFrontend(str_contains($html, 'fa-solid fa-copy'), 'The transcript copy action is missing its Font Awesome icon.');
 checkFrontend(str_contains($html, 'navigator.clipboard.writeText(text)'), 'Transcript copying does not use the Clipboard API.');
 checkFrontend(str_contains($html, '<i class="fa-solid fa-plus"></i> Add URL</button>'), 'The add-URL button label is incorrect.');
 checkFrontend(!str_contains($html, 'Add another URL'), 'The obsolete add-another wording is still present.');
-checkFrontend(!str_contains($html, '<span class="queue-hint">'), 'The format and playlist hint is still visible in the main form.');
-checkFrontend(str_contains($html, '<h2>Download Methods</h2>'), 'The simplified download-method guidance is missing from Help.');
-checkFrontend(str_contains($html, 'Use <i class="fa-solid fa-copy"></i> to copy a complete transcript.'), 'The transcript copy feature is missing from Help.');
-checkFrontend(str_contains($html, "D̸O̷N̸'̴T̶"), 'The original fun Help warning changed unexpectedly.');
-checkFrontend(str_contains($html, '<button type="button" id="helplink" aria-label="Help" title="Help">'), 'Help is not an accessible action-row button.');
-checkFrontend(!str_contains($html, '<div id="options">'), 'Help still occupies a separate form row.');
-checkFrontend(str_contains($css, 'grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 2.75rem;'), 'The queue action row does not reserve an inline Help column.');
-checkFrontend(str_contains($html, '<form novalidate>'), 'The queue form does not use the custom validation experience.');
-checkFrontend(str_contains($html, 'type="url" class="queue-url"'), 'Queue fields are not semantic URL inputs.');
-checkFrontend(str_contains($html, 'maxlength="2048"'), 'Queue URL fields are missing a safe length limit.');
-checkFrontend(str_contains($html, 'class="url-validation" aria-live="polite"'), 'Queue rows are missing accessible validation feedback.');
-checkFrontend(str_contains($html, "$.post('/system/ajax.php', { validateUrl: url })"), 'Queue rows do not request authoritative URL validation.');
-checkFrontend(str_contains($html, "setQueueSubmitting(true, 'Validating…')"), 'Queue submission does not validate before queueing.');
-checkFrontend(str_contains($html, 'function validateQueueInputsSequentially()'), 'Multiple URL validations are not serialized.');
-checkFrontend(str_contains($html, "parsed.username || parsed.password"), 'Client URL validation does not reject embedded credentials.');
-checkFrontend(str_contains($css, '.url-validation:not(:empty) { display: flex }'), 'Inline URL validation feedback is not styled.');
-checkFrontend(str_contains($css, 'input[type=url].brokenurl { border-color: #C44 }'), 'Invalid URL fields are not visually identified.');
-checkFrontend(str_contains($html, 'The field checks that yt-dlp recognizes downloadable media before it enters the queue.'), 'The Help dialog does not explain URL validation.');
+
+$publicTabPosition = strpos($html, 'id="publicDownloadsTab"');
+$privateTabPosition = strpos($html, 'id="privateDownloadsTab"');
+checkFrontend($publicTabPosition !== false && $privateTabPosition !== false && $publicTabPosition < $privateTabPosition, 'Public downloads are not presented before private downloads.');
+checkFrontend(str_contains($html, 'id="publicDownloadsPanel"') && str_contains($html, 'id="privateDownloadsPanel"'), 'The recent download sections are incomplete.');
+checkFrontend(str_contains($html, '{ publishFileId: fileId }'), 'The irreversible public-sharing action is missing.');
+checkFrontend(str_contains($html, 'cannot be made private again'), 'Public sharing does not warn that it is irreversible.');
+checkFrontend(str_contains($html, 'private to this browser and permanently removed after 72 hours'), 'The 72-hour private retention behavior is not explained.');
+checkFrontend(str_contains($html, 'aria-label="Don\'t click the smiley face... when you\'re not looking at him, he\'s looking at you!"'), 'The complete Cthulhu warning is not accessible.');
+checkFrontend(str_contains($html, 'class="eldritch-low"') && str_contains($html, 'class="eldritch-mid"') && str_contains($html, 'class="eldritch-high"'), 'The Cthulhu warning does not increase in intensity.');
+
+checkFrontend(str_contains($dockerfile, '<Directory "/var/www/html/download">') && str_contains($dockerfile, '<Directory "/var/www/html/temp">'), 'Runtime storage is not blocked from direct Apache access.');
+checkFrontend(str_contains($dockerfile, 'CMD ["start-downloader"]'), 'The cleanup-enabled container command is missing.');
+checkFrontend(str_contains($entrypoint, 'php /var/www/html/system/ajax.php cleanup') && str_contains($entrypoint, 'DOWNLOADER_CLEANUP_INTERVAL_SECONDS:-900'), 'The periodic retention cleanup is missing.');
 
 echo "Frontend tests passed.\n";

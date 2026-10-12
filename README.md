@@ -7,11 +7,14 @@ The app runs in Docker and includes PHP, Apache, `yt-dlp`, Deno for YouTube's Ja
 ## Features
 
 - Multi-URL queue with a separate output choice for every URL
-- Inline URL checks that confirm yt-dlp can identify downloadable media before queueing
+- Compact URL checks that lock each field after confirming compatible media
 - Server-side rejection of credentials, direct IPs, reserved hostnames, nonstandard ports, and private DNS targets
 - Sequential background processing that protects the host from download bursts
 - YouTube and other supported playlist downloads (up to 50 items by default)
-- Recent downloads list with play, save, delete, and refresh actions
+- Anonymous, cookie-based isolation of private files and job status without user accounts
+- Separate public and private recent-file views with irreversible opt-in public sharing
+- Automatic permanent removal of private and public files after their 72-hour retention window
+- Recent file lists with preview, save, publish, delete, and refresh actions
 - Supported output modes:
   - Original media download
   - MP3 audio extraction
@@ -62,6 +65,7 @@ The default configuration works for local use. These environment variables can b
 | `DOWNLOADER_REENCODE_MAX_SECONDS` | `7200` | Maximum source duration for H264 re-encode |
 | `DOWNLOADER_MAX_BATCH_ITEMS` | `20` | Maximum URLs accepted in one queue submission |
 | `DOWNLOADER_PLAYLIST_MAX_ITEMS` | `50` | Maximum items downloaded from one playlist |
+| `DOWNLOADER_CLEANUP_INTERVAL_SECONDS` | `900` | Interval between automatic retention cleanup passes |
 | `DOWNLOADER_URL_VALIDATION_TIMEOUT` | `25` | Maximum seconds allowed for a yt-dlp compatibility check |
 | `DOWNLOADER_URL_VALIDATION_CACHE_SECONDS` | `600` | How long successful compatibility checks are reused |
 | `DOWNLOADER_OUTPUT_TEMPLATE` | `%(playlist_index\|)s%(playlist_index& - \|)s%(title).180B [%(id)s].%(ext)s` | `yt-dlp` output filename template |
@@ -97,7 +101,9 @@ The default compose file uses three project directories:
 | `./temp` | `/var/www/html/temp` | Job status and temporary work files |
 | `./temp` | `/work` | The same temporary data as seen by the transcription worker |
 
-`download/` and `temp/` are ignored by git except for `.gitkeep` placeholders. Back up `download/` if you want to preserve completed media. The configured Whisper model is downloaded into the transcription image at build time.
+`download/` and `temp/` are ignored by git except for `.gitkeep` placeholders. Apache blocks direct web access to both directories; completed files are served through an ownership-aware PHP endpoint. The configured Whisper model is downloaded into the transcription image at build time.
+
+Completed files are intentionally ephemeral. Private files are associated with a random, HttpOnly browser cookie and expire 72 hours after processing. A user can irreversibly publish one of their private files, which removes its private owner and starts a fresh 72-hour public retention window. A cleanup loop runs every 15 minutes by default, and normal page activity also triggers cleanup.
 
 ## Updating
 
@@ -114,14 +120,14 @@ If you use a custom compose file, keep the same mounted paths or set `DOWNLOADER
 
 To back up a deployment, keep a copy of:
 
-- `download/` for completed media
+- any completed media that users have explicitly saved outside the app before its retention deadline
 - any custom `compose.yaml` changes
 - any reverse proxy or tunnel configuration outside this repository
 
 To restore:
 
 1. Clone the repository on the new host.
-2. Restore `download/` if you have saved media.
+2. Restore any long-term media archive outside the app's ephemeral runtime directories.
 3. Apply any custom compose or proxy settings.
 4. Run `docker compose up -d --build`.
 5. Open `http://localhost:8080` or your configured public URL.
@@ -163,7 +169,9 @@ The default transcription model is downloaded while its Docker image is built, s
 
 ## Security Notes
 
-This project is intended for personal or trusted-user deployments. It does not include authentication, account management, quota controls, or multi-user isolation. Put it behind an access-controlled proxy or private network if it is reachable from the internet.
+This project does not include login-based authentication, account management, or quota controls. It provides anonymous browser isolation using a random 256-bit cookie: private files and processing status are visible only to the cookie that created them, while public sharing is explicit and irreversible. This is useful privacy separation, but it is not a substitute for authenticated accounts on a hostile deployment.
+
+Completed media is stored under opaque physical filenames, and direct HTTP access to the mounted runtime directories is denied by Apache. The application checks ownership before serving private previews or saves. Both private and public media is permanently removed when its 72-hour retention window expires.
 
 URL validation is deliberately performed on the server as well as in the browser. The server accepts only standard HTTP(S) service URLs that resolve exclusively to public addresses, then runs a time-limited, metadata-only yt-dlp extraction before a job can enter the queue. Expensive compatibility checks are serialized and briefly cached; these safeguards reduce misuse but are not a substitute for authentication or network-level egress controls on an untrusted public deployment.
 

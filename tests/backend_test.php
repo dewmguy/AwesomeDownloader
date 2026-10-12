@@ -82,7 +82,7 @@ $unsupported = validateMediaUrl(
   fn($command, $timeout) => ['exitCode' => 1, 'stdout' => '', 'stderr' => 'unsupported', 'timedOut' => false],
   false
 );
-check(!$unsupported['valid'] && str_contains($unsupported['message'], 'yt-dlp'), 'An unsupported page passed media validation.');
+check(!$unsupported['valid'] && !str_contains(strtolower($unsupported['message']), 'yt-dlp'), 'An unsupported page exposed an implementation detail or passed validation.');
 
 $command = buildYtDlpCommand('https://www.youtube.com/playlist?list=test', 'transcribe', '/tmp/work');
 check(in_array('--yes-playlist', $command, true), 'Playlist downloads are not explicitly enabled.');
@@ -104,13 +104,71 @@ $durations = parseDurationOutput("12.5\n01:02\n1:02:03\n");
 check($durations === [12.5, 62.0, 3723.0], 'Playlist duration parsing is incorrect.');
 check(parseDurationOutput("12\nNA\n") === null, 'Unknown playlist duration did not fail closed.');
 
-$transcriptItem = formatFileListItem('Example & notes.txt');
-check(str_contains($transcriptItem, 'play transcript'), 'Transcript preview class is missing.');
-check(str_contains($transcriptItem, 'Example%20%26%20notes.txt'), 'Download URL is not encoded.');
+check(isValidVisitorToken(base64UrlEncode(str_repeat('a', 32))), 'A generated anonymous visitor token was rejected.');
+check(!isValidVisitorToken('short-or-unsafe'), 'An invalid anonymous visitor token was accepted.');
+check(visitorIdForToken('visitor-a') !== visitorIdForToken('visitor-b'), 'Distinct visitor tokens produced the same owner identity.');
 
-if (!is_dir($testRoot . '/download')) mkdir($testRoot . '/download', 0775, true);
-file_put_contents($testRoot . '/download/example.mp3', 'one');
-check(str_ends_with(uniqueTargetPath($testRoot . '/download', 'example.mp3'), 'example (2).mp3'), 'Duplicate outputs are not renamed safely.');
+ensureRuntimeDirs();
+$now = time();
+$ownerA = hash('sha256', 'owner-a');
+$ownerB = hash('sha256', 'owner-b');
+$sourceDir = $testRoot . '/source';
+mkdir($sourceDir, 0775, true);
+file_put_contents($sourceDir . '/Example & notes.txt', 'private transcript');
+$moved = moveProcessedFiles($sourceDir, FINAL_DIR, $ownerA, $now);
+check(count($moved) === 1, 'A completed output was not registered.');
+$record = $moved[0] ?? [];
+check(($record['name'] ?? '') === 'Example & notes.txt', 'The user-facing filename was not preserved in metadata.');
+check((bool)preg_match('/^[a-f0-9]{24}\.txt$/', $record['storageName'] ?? ''), 'The physical filename is not opaque.');
+check(is_file(FINAL_DIR . '/' . ($record['storageName'] ?? 'missing')), 'The registered output is missing from protected storage.');
+
+$visibleA = getVisibleDownloads($ownerA, $now + 1);
+$visibleB = getVisibleDownloads($ownerB, $now + 1);
+check(count($visibleA['private']) === 1 && empty($visibleB['private']), 'Private output visibility is not owner-isolated.');
+check(getAccessibleFileRecord($record['id'], $ownerA, $now + 1) !== null, 'The owner cannot access a private output.');
+check(getAccessibleFileRecord($record['id'], $ownerB, $now + 1) === null, 'A different visitor can access a private output.');
+
+$privateItem = formatFileListItem($record, true);
+check(str_contains($privateItem, 'play transcript'), 'Transcript preview class is missing.');
+check(str_contains($privateItem, '/system/ajax.php?media=' . $record['id']), 'Controlled media URL is missing.');
+check(!str_contains($privateItem, '/download/'), 'A direct storage URL was exposed.');
+check(str_contains($privateItem, '>Save</span>') && str_contains($privateItem, 'class="file-action publish"'), 'Private file actions are incomplete.');
+
+check(publishOwnedFile($record['id'], $ownerA, $now + 10), 'The owner could not make a private output public.');
+$published = readFileMetadata($record['id']);
+check(!empty($published['public']) && array_key_exists('ownerId', $published) && $published['ownerId'] === null, 'Publishing did not detach the private owner.');
+check(($published['expiresAt'] ?? 0) === $now + 10 + CONTENT_RETENTION_SECONDS, 'Publishing did not start a new 72-hour retention window.');
+check(getAccessibleFileRecord($record['id'], $ownerB, $now + 11) !== null, 'A public output is not visible to another visitor.');
+check(!publishOwnedFile($record['id'], $ownerA, $now + 20), 'A public output was allowed to change sharing state again.');
+check(!deleteOwnedFile($record['id'], $ownerA), 'A public output was allowed to return to owner control through deletion.');
+$publicItem = formatFileListItem($published, false);
+check(!str_contains($publicItem, 'class="file-action publish"') && !str_contains($publicItem, 'class="file-action delete"'), 'Public output exposes private management actions.');
+
+mkdir($sourceDir . '-delete', 0775, true);
+file_put_contents($sourceDir . '-delete/delete-me.mp3', 'audio');
+$privateDelete = moveProcessedFiles($sourceDir . '-delete', FINAL_DIR, $ownerA, $now)[0];
+check(!deleteOwnedFile($privateDelete['id'], $ownerB), 'A different visitor deleted a private output.');
+check(deleteOwnedFile($privateDelete['id'], $ownerA), 'The owner could not delete a private output.');
+
+mkdir($sourceDir . '-expired', 0775, true);
+file_put_contents($sourceDir . '-expired/expired.mp4', 'video');
+$expired = moveProcessedFiles($sourceDir . '-expired', FINAL_DIR, $ownerA, $now - CONTENT_RETENTION_SECONDS - 10)[0];
+file_put_contents(FINAL_DIR . '/legacy-old.mp3', 'legacy');
+touch(FINAL_DIR . '/legacy-old.mp3', $now - CONTENT_RETENTION_SECONDS - 10);
+$oldJobId = str_repeat('a', 24);
+file_put_contents(getJobPath($oldJobId), json_encode(['id' => $oldJobId, 'ownerId' => $ownerA, 'state' => 'complete', 'updatedAt' => $now - CONTENT_RETENTION_SECONDS - 10]));
+touch(getJobPath($oldJobId), $now - CONTENT_RETENTION_SECONDS - 10);
+$oldCache = URL_VALIDATION_CACHE_DIR . '/old.json';
+file_put_contents($oldCache, '{}');
+touch($oldCache, $now - CONTENT_RETENTION_SECONDS - 10);
+$cleanup = purgeExpiredContent($now);
+check(readFileMetadata($expired['id']) === null && !is_file(FINAL_DIR . '/' . $expired['storageName']), 'Expired tracked output was not permanently removed.');
+check(!is_file(FINAL_DIR . '/legacy-old.mp3'), 'Expired legacy output was not permanently removed.');
+check(!is_file(getJobPath($oldJobId)) && !is_file($oldCache), 'Expired job or validation metadata was not removed.');
+check(($cleanup['files'] ?? 0) >= 2 && ($cleanup['jobs'] ?? 0) >= 1 && ($cleanup['cache'] ?? 0) >= 1, 'Cleanup counters do not reflect expired data.');
+
+check(jobBelongsToOwner(['ownerId' => $ownerA], $ownerA), 'Owner job authorization failed.');
+check(!jobBelongsToOwner(['ownerId' => $ownerA], $ownerB), 'Another visitor passed job authorization.');
 
 cleanupWorkDir($testRoot);
 if (!empty($failures)) {

@@ -109,23 +109,30 @@ form {
   gap: .5rem;
 }
 .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 8rem }
-.url-validation {
-  display: none;
-  grid-column: 1 / -1;
-  align-items: center;
-  gap: .4rem;
-  margin-top: -.2rem;
-  padding: 0 .25rem;
-  color: rgba(255,255,255,.8);
-  font-family: "SFMedium", sans-serif;
-  font-size: .82rem;
-  line-height: 1.25;
+.url-field-shell {
+  position: relative;
+  min-width: 0;
 }
-.url-validation:not(:empty) { display: flex }
-.url-validation i { font-size: .82rem }
-.url-validation.valid { color: #5FC }
-.url-validation.invalid { color: #F99 }
-.url-validation.checking { color: #FFF }
+.url-field-shell .queue-url { padding-right: 2.75rem }
+.url-field-shell .url-status {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: calc(100% - 4px);
+  padding: 0;
+  background: transparent;
+  color: rgba(255,255,255,.5);
+}
+.url-field-shell .url-status:hover, .url-field-shell .url-status:focus-visible { background: rgba(0,0,0,.25); color: #FFF }
+.url-field-shell .url-status i { font-size: 1rem }
+.url-field-shell .url-status.valid { color: #5FC }
+.url-field-shell .url-status.invalid { color: #F99 }
+.url-field-shell .url-status.checking { color: #FFF; opacity: 1 }
+.url-field-shell .url-status:disabled:hover { background: transparent; color: #FFF }
 #queueActions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 2.75rem;
@@ -364,10 +371,11 @@ div.flex {
  align-items: center;
  gap: 1em;
 }
-p.title {
+h1.title {
  font-family: "SFHeavy";
  color: #FFF;
  font-size: 2em;
+ line-height: 1.1;
 }
 .head {
  font-family: "SFBold";
@@ -380,6 +388,14 @@ p.title {
  align-items: center;
  font-size: 1.5rem;
 }
+.icons-featured {
+ max-width: 32rem;
+ padding: .15rem .25rem;
+ border-radius: .25rem;
+ background: rgba(0,0,0,.15);
+}
+.icons-featured .fa-brands { font-size: 1.05em }
+.icons-all { grid-template-columns: repeat(10, minmax(0, 1fr)) }
 .icons .fa-brands {
  position: relative;
  font-size: 1.25em;
@@ -483,20 +499,75 @@ a, .link { color: #FFF }
 .link { cursor: pointer }
 a:active, a:hover, .link:hover { color: #5FC }
 .link:hover { text-decoration: none }
-.link.delete:hover { color: #5FC }
+.link.delete:hover { color: #F66 }
 
 .clicked {
  color: #5FC;
  text-decoration: underline;
 }
 
-ul#downloads { padding: 0 }
-ul#downloads li {
+.downloads-heading {
  display: flex;
- gap: .5em;
- align-items: baseline;
- padding: 0;
+ align-items: center;
+ justify-content: space-between;
+ gap: .75rem;
+ padding-right: 2.5rem;
 }
+.download-tabs { display: flex; gap: .25rem }
+.download-tab {
+ padding: .35rem .55rem;
+ border: 1px solid rgba(255,255,255,.25);
+ background: rgba(0,0,0,.22);
+ color: rgba(255,255,255,.75);
+ font-size: .82rem;
+}
+.download-tab.active, .download-tab:hover, .download-tab:focus-visible {
+ border-color: #0A8;
+ background: #0A8;
+ color: #111;
+}
+.download-panel ul { padding: 0 }
+.download-panel li {
+ display: flex;
+ align-items: center;
+ gap: .5rem;
+ min-width: 0;
+ padding: .2rem 0;
+ list-style: none;
+}
+.download-panel .play {
+ min-width: 0;
+ flex: 1;
+ overflow: hidden;
+ padding: .2rem 0;
+ background: transparent;
+ color: #FFF;
+ font-family: "SFRegular";
+ text-align: left;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.download-panel .play:hover, .download-panel .play:focus-visible { background: transparent; color: #5FC }
+.file-actions { display: flex; align-items: center; gap: .2rem }
+.file-action {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ gap: .25rem;
+ min-height: 1.8rem;
+ padding: .3rem .45rem;
+ border-radius: .2rem;
+ background: rgba(0,0,0,.25);
+ color: #FFF;
+ font-family: "SFBold";
+ font-size: .78rem;
+ line-height: 1;
+ text-decoration: none;
+}
+.file-action i, .file-action span { font-size: .78rem }
+.file-action:hover, .file-action:focus-visible { background: #0A8; color: #111 }
+.file-action.delete:hover, .file-action.delete:focus-visible { background: #C33; color: #FFF }
+.empty-downloads { color: rgba(255,255,255,.7) }
 ul, ul li { list-style: square }
 ol, ol li { list-style: decimal }
 ul, ol, ul li, ol li { padding: revert }
@@ -514,6 +585,21 @@ ol.nobullet li, ul.nobullet li {
   margin-left: -20px;
 }
 li::marker { color: #5FC }
+.eldritch-tip { line-height: 1.8 }
+.eldritch-low { opacity: .82 }
+.eldritch-mid { color: #BFC; text-shadow: 0 0 .25rem rgba(85,255,204,.35) }
+.eldritch-high { color: #8FFFD9; font-family: "SFBold"; text-shadow: 0 0 .45rem #0A8, .08rem 0 #F5F }
+.visually-hidden {
+ position: absolute !important;
+ width: 1px !important;
+ height: 1px !important;
+ padding: 0 !important;
+ margin: -1px !important;
+ overflow: hidden !important;
+ clip: rect(0, 0, 0, 0) !important;
+ white-space: nowrap !important;
+ border: 0 !important;
+}
 
 input[type=url] {
   display: inline-block;
@@ -528,6 +614,7 @@ input[type=url]:focus, input[type=url]:hover, input[type=url]:not(:placeholder-s
 input[type=url].checkingurl { border-color: #FFF }
 input[type=url].validurl { border-color: #5FC }
 input[type=url].brokenurl { border-color: #C44 }
+input[type=url][readonly] { cursor: default }
 
 input[type=submit], button {
  padding: 12px 20px;

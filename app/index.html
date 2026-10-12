@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20260903-url-validation" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20261012-private-downloads" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -38,6 +38,8 @@ var jobPollRequest = null;
 var jobPollTimer = null;
 var queueRowCounter = 0;
 var maxQueueRows = 20;
+var activeDownloadView = 'private';
+var downloadsLoaded = false;
 
 refreshDownloads();
 $("#help,#player,#activeQueue").hide();
@@ -46,21 +48,29 @@ addQueueRow();
 $('#loader').on('click', function() { watchfulEye = !watchfulEye; });
 
 $(document).on('click', '.delete', function() {
-  var fileName = $(this).data('file');
-  if (confirm('Are you sure you want to delete this file?')) {
-    $.ajax({
-      url: '/system/ajax.php',
-      type: 'POST',
-      data: { file: fileName },
-      success: function(response) {
-        if (response === 'true') {
-          refreshDownloads();
-          showOutput('File deleted.', 'success');
-        }
-        else showOutput('Error deleting file.', 'error');
-      }
-    });
-  }
+  var fileId = $(this).data('fileId');
+  if (!confirm('Permanently delete this private file? This cannot be undone.')) return;
+  $.post('/system/ajax.php', { deleteFileId: fileId }).done(function(response) {
+    var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
+    if (json.status === 0) {
+      refreshDownloads('private');
+      showOutput(json.message, 'success');
+    }
+    else showOutput(json.message || 'Unable to delete that file.', 'error');
+  }).fail(function() { showOutput('Unable to delete that file.', 'error'); });
+});
+
+$(document).on('click', '.publish', function() {
+  var fileId = $(this).data('fileId');
+  if (!confirm('Make this file public for 72 hours? Anyone using this site can access it, and it cannot be made private again.')) return;
+  $.post('/system/ajax.php', { publishFileId: fileId }).done(function(response) {
+    var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
+    if (json.status === 0) {
+      refreshDownloads('public');
+      showOutput(json.message, 'success');
+    }
+    else showOutput(json.message || 'Unable to make that file public.', 'error');
+  }).fail(function() { showOutput('Unable to make that file public.', 'error'); });
 });
 
 $(document).ajaxStart(function() {
@@ -101,9 +111,10 @@ $(document).on('click', '.play', function() {
   $('html, body').animate({ scrollTop: 0 }, 'slow');
   $('.play').removeClass('clicked');
   $(this).addClass('clicked');
-  var file = $(this).data('file');
+  var fileId = $(this).data('fileId');
+  var file = $(this).data('fileName');
   var extension = file.split('.').pop().toLowerCase();
-  var filePath = '/download/' + encodeURIComponent(file);
+  var filePath = '/system/ajax.php?media=' + encodeURIComponent(fileId);
   var $closer = $('<button type="button" id="closer" aria-label="Close player" title="Close"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>');
   var $playerActions = $('<div id="playerActions"></div>');
   $('#player').empty().append($playerActions.append($closer)).show();
@@ -191,8 +202,12 @@ $('#reload').on('click', function() {
 $('#addUrl').on('click', function() { addQueueRow(); });
 
 $('#queueRows').on('click', '.remove-url', function() {
-  if (!confirm('Remove this URL from the download queue?')) return;
-  $(this).closest('.queue-row').remove();
+  var $row = $(this).closest('.queue-row');
+  var $input = $row.find('.queue-url');
+  if ($input.data('validationState') === 'valid' && !confirm('Remove this verified URL from the processing queue?')) return;
+  var request = $input.data('validationRequest');
+  if (request) request.abort();
+  $row.remove();
   if ($('.queue-row').length === 0) addQueueRow();
   updateQueueControls();
 });
@@ -261,8 +276,25 @@ $('#queueRows').on('input', '.queue-url', function() {
   updateQueueControls();
 });
 
+$('#queueRows').on('paste', '.queue-url', function() {
+  var input = this;
+  setTimeout(function() {
+    if ($(input).val().trim() !== '') validateQueueUrl($(input));
+  }, 0);
+});
+
 $('#queueRows').on('blur', '.queue-url', function() {
   if ($(this).val().trim() !== '') validateQueueUrl($(this));
+});
+
+$('#queueRows').on('click', '.url-status', function() {
+  var $input = $(this).closest('.url-field-shell').find('.queue-url');
+  if ($input.data('validationState') === 'valid') {
+    resetUrlValidation($input);
+    $input.prop('readonly', false).focus().select();
+    updateQueueControls();
+  }
+  else if (!$input.prop('readonly')) $input.focus();
 });
 
 $('#queueRows').on('change', '.queue-mode', function() {
@@ -274,16 +306,8 @@ $('form').submit(function(event) {
   var items = collectQueueItems();
   if (items === null || items.length === 0) return;
 
-  setQueueSubmitting(true, 'Validating…');
-  validateQueueInputsSequentially().done(function(valid) {
-    if (!valid) {
-      setQueueSubmitting(false);
-      return;
-    }
-
-    var isQueue = items.length > 1;
-    $('#downloadSubmit').find('.button-label').text(isQueue ? 'Queueing downloads…' : 'Starting download…');
-    $.post('/system/ajax.php', { queue: JSON.stringify(items) })
+  setQueueSubmitting(true, items.length > 1 ? 'Starting Queue…' : 'Starting…');
+  $.post('/system/ajax.php', { queue: JSON.stringify(items) })
       .done(function(response) {
         var json = typeof response === 'string' ? jQuery.parseJSON(response) : response;
         if (json.status !== 0 || !json.jobs) {
@@ -300,9 +324,8 @@ $('form').submit(function(event) {
         resetQueueRows();
         ensureJobPolling();
       })
-      .fail(function() { showOutput('Unable to reach the download queue.', 'error'); })
+      .fail(function() { showOutput('Unable to start processing.', 'error'); })
       .always(function() { setQueueSubmitting(false); });
-  });
 });
 
 function addQueueRow(url, mode) {
@@ -310,6 +333,9 @@ function addQueueRow(url, mode) {
   queueRowCounter++;
   var $row = $('<div class="queue-row"></div>');
   var $url = $('<input type="url" class="queue-url" inputmode="url" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048" enterkeyhint="done" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL" aria-invalid="false">').val(url || '');
+  var $fieldShell = $('<div class="url-field-shell"></div>');
+  var $validation = $('<button type="button" class="url-status idle" aria-label="URL not verified" title="Paste a link to verify it"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span class="visually-hidden" aria-live="polite">URL not verified</span></button>');
+  $fieldShell.append($url, $validation);
   var selectedMode = mode || 'base';
   var menuId = 'queueModeMenu' + queueRowCounter;
   var $mode = $('<input type="hidden" class="queue-mode">');
@@ -335,8 +361,7 @@ function addQueueRow(url, mode) {
   $modeButton.append($('<span class="queue-mode-label"></span>').text(selectedLabel[1]), '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i>');
   $modePicker.append($mode, $modeButton, $modeMenu);
   var $remove = $('<button type="button" class="remove-url" aria-label="Remove URL from queue" title="Remove from queue"><i class="fa-solid fa-trash-can" aria-hidden="true"></i></button>');
-  var $validation = $('<span class="url-validation" aria-live="polite"></span>');
-  $row.append($url, $modePicker, $remove, $validation);
+  $row.append($fieldShell, $modePicker, $remove);
   $('#queueRows').append($row);
   updateQueueControls();
 }
@@ -372,18 +397,21 @@ function collectQueueItems() {
   $('.queue-row').each(function() {
     var $input = $(this).find('.queue-url');
     var url = $input.val().trim();
-    if (url === '') return;
-    var validation = validateUrlShape(url);
-    if (!validation.valid) {
-      setUrlValidation($input, 'invalid', validation.message);
-      if (firstError === '') firstError = validation.message;
+    if (url === '') {
+      setUrlValidation($input, 'invalid', 'Add a URL or remove this row.');
+      if (firstError === '') firstError = 'Every URL field must be filled and verified.';
+      invalid = true;
+      return;
+    }
+    if ($input.data('validationState') !== 'valid' || $input.data('validatedUrl') !== url) {
+      if (firstError === '') firstError = 'Every URL field must be verified before processing starts.';
       invalid = true;
       return;
     }
     items.push({ url: url, mode: $(this).find('.queue-mode').val() });
   });
   if (invalid) {
-    showOutput(firstError || 'Correct the highlighted URL before downloading.', 'error');
+    showOutput(firstError, 'error');
     return null;
   }
   if (items.length === 0) {
@@ -424,22 +452,27 @@ function validateUrlShape(value) {
 
 function setUrlValidation($input, state, message) {
   var icons = {
+    idle: 'fa-solid fa-shield-halved',
     checking: 'fa-solid fa-circle-notch fa-spin',
     valid: 'fa-solid fa-circle-check',
     invalid: 'fa-solid fa-circle-exclamation'
   };
-  var $status = $input.closest('.queue-row').find('.url-validation');
+  var $status = $input.closest('.url-field-shell').find('.url-status');
+  var accessibleMessage = message || (state === 'idle' ? 'URL not verified' : 'URL status');
   $input.removeClass('brokenurl validurl checkingurl')
     .addClass(state === 'invalid' ? 'brokenurl' : state === 'valid' ? 'validurl' : state === 'checking' ? 'checkingurl' : '')
-    .attr('aria-invalid', state === 'invalid' ? 'true' : 'false');
-  $status.removeClass('checking valid invalid').empty();
-  if (!message || !icons[state]) return;
-  $status.addClass(state).append($('<i aria-hidden="true"></i>').attr('class', icons[state]), document.createTextNode(message));
+    .attr('aria-invalid', state === 'invalid' ? 'true' : 'false')
+    .prop('readonly', state === 'checking' || state === 'valid');
+  $status.removeClass('idle checking valid invalid').addClass(state || 'idle')
+    .attr({ 'aria-label': accessibleMessage, title: state === 'valid' ? accessibleMessage + ' Click to edit this URL.' : accessibleMessage })
+    .prop('disabled', state === 'checking')
+    .empty()
+    .append($('<i aria-hidden="true"></i>').attr('class', icons[state] || icons.idle), $('<span class="visually-hidden" aria-live="polite"></span>').text(accessibleMessage));
 }
 
 function resetUrlValidation($input) {
   $input.removeData('validatedUrl validationState validationPromise validationRequest');
-  setUrlValidation($input, 'idle', '');
+  setUrlValidation($input, 'idle', 'URL not verified');
 }
 
 function resolvedValidation(result) {
@@ -461,14 +494,15 @@ function validateQueueUrl($input) {
   }
 
   if ($input.data('validatedUrl') === url && $input.data('validationState') === 'valid') {
-    return resolvedValidation({ valid: true, message: $input.closest('.queue-row').find('.url-validation').text() });
+    return resolvedValidation({ valid: true, message: $input.closest('.url-field-shell').find('.url-status').attr('aria-label') });
   }
   if ($input.data('validatedUrl') === url && $input.data('validationPromise')) return $input.data('validationPromise');
 
   var deferred = $.Deferred();
   var promise = deferred.promise();
   $input.data({ validatedUrl: url, validationState: 'checking', validationPromise: promise });
-  setUrlValidation($input, 'checking', 'Checking with yt-dlp…');
+  setUrlValidation($input, 'checking', 'Checking this link…');
+  updateQueueControls();
 
   var request = $.post('/system/ajax.php', { validateUrl: url })
     .done(function(response) {
@@ -481,7 +515,8 @@ function validateQueueUrl($input) {
       catch (error) { json = { valid: false, message: 'The server returned an invalid validation response.' }; }
       var valid = json.status === 0 && json.valid === true;
       $input.data('validationState', valid ? 'valid' : 'invalid');
-      setUrlValidation($input, valid ? 'valid' : 'invalid', json.message || (valid ? 'Supported URL.' : 'This URL is not supported.'));
+      setUrlValidation($input, valid ? 'valid' : 'invalid', json.message || (valid ? 'Verified media link.' : 'This URL is not supported.'));
+      updateQueueControls();
       deferred.resolve({ valid: valid, message: json.message });
     })
     .fail(function(xhr, status) {
@@ -492,6 +527,7 @@ function validateQueueUrl($input) {
       var message = 'Unable to validate this URL right now.';
       $input.data('validationState', 'invalid');
       setUrlValidation($input, 'invalid', message);
+      updateQueueControls();
       deferred.resolve({ valid: false, message: message });
     })
     .always(function() {
@@ -499,31 +535,6 @@ function validateQueueUrl($input) {
     });
   $input.data('validationRequest', request);
   return promise;
-}
-
-function validateQueueInputsSequentially() {
-  var inputs = $('.queue-url').filter(function() { return $(this).val().trim() !== ''; }).toArray();
-  var deferred = $.Deferred();
-  function validateNext(index) {
-    if (index >= inputs.length) {
-      deferred.resolve(true);
-      return;
-    }
-    var $input = $(inputs[index]);
-    validateQueueUrl($input).done(function(result) {
-      if (!result.valid) {
-        if (!result.stale) {
-          showOutput(result.message || 'Correct the highlighted URL before downloading.', 'error');
-          setTimeout(function() { $input.focus(); }, 0);
-        }
-        deferred.resolve(false);
-        return;
-      }
-      validateNext(index + 1);
-    });
-  }
-  validateNext(0);
-  return deferred.promise();
 }
 
 function setQueueSubmitting(submitting, label) {
@@ -540,15 +551,21 @@ function setQueueSubmitting(submitting, label) {
 
 function updateQueueControls() {
   var jobCount = 0;
-  $('.queue-url').each(function() { if ($(this).val().trim() !== '') jobCount++; });
+  var allVerified = true;
+  $('.queue-url').each(function() {
+    var $input = $(this);
+    var url = $input.val().trim();
+    if (url !== '') jobCount++;
+    if (url === '' || $input.data('validationState') !== 'valid' || $input.data('validatedUrl') !== url) allVerified = false;
+  });
   var rowCount = $('.queue-row').length;
   var hasRemoveButtons = rowCount > 1;
   var $submit = $('#downloadSubmit');
   var isSubmitting = $submit.data('submitting') === true;
-  $submit.prop('disabled', isSubmitting || jobCount === 0);
+  $submit.prop('disabled', isSubmitting || jobCount === 0 || !allVerified);
   if (!isSubmitting) {
-    $submit.find('.button-label').text(jobCount > 1 ? 'Download Queue' : 'Download');
-    $submit.find('i').toggleClass('fa-list-check', jobCount > 1).toggleClass('fa-download', jobCount <= 1);
+    $submit.find('.button-label').text(jobCount > 1 ? 'Process Queue' : 'Process');
+    $submit.find('i').removeClass('fa-download').toggleClass('fa-list-check', jobCount > 1).toggleClass('fa-gears', jobCount <= 1);
   }
   $('#addUrl').prop('disabled', rowCount >= maxQueueRows);
   $('.remove-url').toggle(hasRemoveButtons);
@@ -616,15 +633,43 @@ function finishQueue() {
   var jobs = Object.keys(activeJobs).map(function(id) { return activeJobs[id]; });
   var completed = jobs.filter(function(job) { return job.state === 'complete'; }).length;
   var failed = jobs.filter(function(job) { return job.state === 'failed'; }).length;
-  showOutput(completed + ' completed' + (failed ? ', ' + failed + ' failed.' : '.'), failed ? 'error' : 'success');
+  var readyFiles = jobs.reduce(function(total, job) { return total + (job.state === 'complete' ? (job.outputCount || 0) : 0); }, 0);
+  showOutput(readyFiles + (readyFiles === 1 ? ' file is' : ' files are') + ' ready to save' + (failed ? '; ' + failed + ' job' + (failed === 1 ? '' : 's') + ' failed.' : '.'), failed ? 'error' : 'success');
   if (completed) {
-    refreshDownloads();
+    refreshDownloads('private');
     $('.box.list').animate({ scrollTop: 0 }, 'slow');
   }
 }
 
-function refreshDownloads() {
-  $.get('/system/ajax.php?refresh=downloads', function(response) { $('#downloads').html(response); });
+$(document).on('click', '.download-tab', function() {
+  selectDownloadView($(this).data('view'));
+});
+
+function selectDownloadView(view) {
+  if (view === 'public' && $('#publicDownloadsTab').prop('hidden')) view = 'private';
+  activeDownloadView = view;
+  $('.download-tab').attr({ 'aria-selected': 'false', tabindex: '-1' }).removeClass('active');
+  $('.download-panel').prop('hidden', true);
+  $('#' + view + 'DownloadsTab').attr({ 'aria-selected': 'true', tabindex: '0' }).addClass('active');
+  $('#' + view + 'DownloadsPanel').prop('hidden', false);
+}
+
+function refreshDownloads(preferredView) {
+  $.get('/system/ajax.php', { refresh: 'downloads' }, function(response) {
+    var json;
+    try { json = typeof response === 'string' ? jQuery.parseJSON(response) : response; }
+    catch (error) { json = null; }
+    if (!json || json.status !== 0) {
+      showOutput('Unable to refresh recent files.', 'error');
+      return;
+    }
+    $('#privateDownloads').html(json.privateHtml);
+    $('#publicDownloads').html(json.publicHtml);
+    $('#publicDownloadsTab').prop('hidden', json.publicCount === 0);
+    var nextView = preferredView || (!downloadsLoaded && json.publicCount > 0 ? 'public' : activeDownloadView);
+    downloadsLoaded = true;
+    selectDownloadView(nextView);
+  });
 }
 
 function showOutput(message, className) {
@@ -639,24 +684,24 @@ function showOutput(message, className) {
 
 <div id="help">
 <div class="helpcontainer">
-<div id="helpcloser"><i class="fa-solid fa-xmark"></i></div>
+<button type="button" id="helpcloser" aria-label="Close help"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
 <h2>How to Use the Downloader</h2>
 <ol>
-<li>Paste a public media or playlist URL. The field checks that yt-dlp recognizes downloadable media before it enters the queue.</li>
-<li>Choose a download method.</li>
-<li>Use <span class="head">Add URL</span> for more jobs. Each URL can use a different method.</li>
-<li>Click <span class="head">Download</span> for one job or <span class="head">Download Queue</span> for several.</li>
+<li>Paste a public media or playlist link. A green check means the link is verified; select the check to edit it.</li>
+<li>Choose a method. Use <span class="head">Add URL</span> to process several links with different choices.</li>
+<li><span class="head">Process</span> prepares one link; <span class="head">Process Queue</span> prepares several. Every row must be filled and verified first.</li>
+<li>When processing finishes, choose <span class="head">Save</span> beside a file to download it to your device.</li>
 </ol>
 <h2>Download Methods</h2>
 <ul class="dots">
-<li><span class="head">Base:</span> Download the original media.</li>
+<li><span class="head">Base:</span> Keep the original media format.</li>
 <li><span class="head">H264:</span> Create a broadly compatible video, up to 120 minutes.</li>
 <li><span class="head">GIF:</span> Create a silent GIF, up to 10 minutes.</li>
 <li><span class="head">MP3:</span> Extract the audio.</li>
-<li><span class="head">Transcribe:</span> Create a timestamped written transcript with local Whisper.</li>
+<li><span class="head">Transcribe:</span> Create a timestamped written transcript.</li>
 </ul>
 <h2>Supported Sites</h2>
-<p class="icons" aria-hidden="true">
+<p class="icons icons-all" aria-hidden="true">
 <i class="fa-brands fa-youtube" title="YouTube"></i>
 <i class="fa-brands fa-vimeo" title="Vimeo"></i>
 <i class="fa-brands fa-facebook" title="Facebook"></i>
@@ -678,17 +723,20 @@ function showOutput(message, className) {
 <i class="fa-brands fa-snapchat" title="Snapchat"></i>
 <i class="fa-brands fa-linkedin" title="LinkedIn"></i>
 </p>
-<p>These services—and many others supported by yt-dlp—work with media and playlist links. Playlists are limited to 50 items and run in order.</p>
-<h2>Completed Downloads</h2>
+<p>These services—and many others—work with media and playlist links. Playlists are limited to 50 items and run in order.</p>
+<h2>Recent Files &amp; Privacy</h2>
 <ul class="dots">
+<li><span class="head">Your Downloads</span> are private to this browser and permanently removed after 72 hours.</li>
+<li>You may make a private file public for 72 hours. That choice cannot be reversed.</li>
+<li><span class="head">Public Downloads</span> are visible to everyone without naming who shared them.</li>
 <li>Select a title to preview media or read a transcript.</li>
 <li>Use <i class="fa-solid fa-copy"></i> to copy a complete transcript.</li>
-<li>Use <i class="fa-solid fa-floppy-disk"></i> to save, <i class="fa-solid fa-trash"></i> to delete, or <i class="fa-solid fa-arrows-rotate"></i> to refresh.</li>
+<li>Use <i class="fa-solid fa-download"></i> to save, <i class="fa-solid fa-earth-americas"></i> to make public, <i class="fa-solid fa-trash"></i> to delete, or <i class="fa-solid fa-arrows-rotate"></i> to refresh.</li>
 <li>Transcription runs on this server's CPU, so long videos may take a few minutes.</li>
 </ul>
 <h2>Tips:</h2>
 <ul class="dots">
-<li>D̸O̷N̸'̴T̶ ̷C̴L̸I̵C̶K̵ ̸T̴H̷E̸ S̷̚ͅM̷̲̟̈́͘Ȋ̶̛͙̦L̷̹̯͎̑È̸̬̀͝Y̴͓̫͗ ̴͓͈͗Ḟ̷̨̬̈A̴͈͚̰̾͝͝C̵̙͕̏̒͗Ë̷̢͍́͘ ̶͔̄̍W̶̢̞̆̒̕H̴̗̭͂̕E̷͔͎̮̽̾̕N̸͉̱̆̎ ̴͇͍͝ͅY̴̭̭̪͒͑̏O̴̙̮̖͊̈U̵̬̒'̶̘̽͝Ȑ̴͉̾E̴͖̯͋̑ ̴̦̐̆N̴̰̺̞̈́̓O̶͍̓T̵̫͖̂̏̈́ L̸̛̟̮̟̲͂̈́̂͑͝O̵̟̝͕̗̼̓͛̽͝O̸̧̥̰̤͉͔̔͗͛̈́́̅͌͘Ǩ̷̯̳̪̝͒͠I̴̡̧̨̝̯̹͆ͅN̷͈̹̭̼̞͐̈́̄͊̓̓̚͠͝͝G̶̘̻͍͆̏̔̎ ̶̡͈͍̜̭̓̀ͅA̸̬͖͓̱̓̄͋̎̀̃̀͒͘T̶̯̗͍̖̣̲̲̈́̏̂̈̈́̑̒̀́̋ ̴̬̥̮̗̪͚̪͐̽̏̐͋͂H̶̹͉͇̭͍̯̃̽̈̊͠ͅI̷̡̖̹̱̙̭͒̈͌̐M̸̡̢̛̱͎̞̭͍̣̣͂̉́͗̃̓̏̚͝.</li>
+<li class="eldritch-tip" aria-label="Don't click the smiley face... when you're not looking at him, he's looking at you!"><span class="eldritch-low" aria-hidden="true">D̸O̷N̸'̴T̶ C̴L̸I̵C̶K̵ T̴H̷E̸ S̷M̷I̶L̷E̸Y̴ F̷A̴C̵E̷...</span> <span class="eldritch-mid" aria-hidden="true">W̶̆̒H̴͂̕E̷̽̕N̸̆̎ Y̴͒͑O̴͊̈U̵̒'̶̽͝Ȑ̴̾E̴͋̑ N̴̈́̓O̶̓T̵̂̏ L̸̛͂O̵̓͝O̸̔͘Ǩ̷͠I̴͆N̷̚͠G̶͆̏ A̸̓͘T̶̈́̏ H̶̃͠I̷͒̈M̸͂̉,</span> <span class="eldritch-high" aria-hidden="true">Ḧ̷͇̘̞́̄̿̅͑̾̏͝Ȇ̸̛̼̲͂̏͊̐̾̒'̵̢̝̤͛̈́̊͆͑̑̽͠Ś̷̢͉̄̈́̅̈́͗ Ĺ̷̺̾̋̈́̾Ȏ̵͇͛̈́̓̚͝O̸͎͑͆̈́͘̚K̶̮̒̐̄͘͘I̸̫͑͊̓͛͠N̵̞̔͗̾͝͝G̷͚͊͗̄̽ A̴͍͛͛̓̚T̵̠̅͊͛͝ Y̷̛̘̒̈́̊̿Ó̴̰́̓͂U̴̜͌̏̈́̚!</span></li>
 </ul>
 </div>
 </div>
@@ -697,12 +745,24 @@ function showOutput(message, className) {
 <img id="loader" src="/system/face.png" alt="Download activity" />
 
 <div class="box">
-<p class="title">Awesome Media Downloader</p>
+<h1 class="title">Awesome Media Downloader</h1>
+<p class="icons icons-featured" aria-hidden="true">
+<i class="fa-brands fa-youtube" title="YouTube"></i>
+<i class="fa-brands fa-vimeo" title="Vimeo"></i>
+<i class="fa-brands fa-facebook" title="Facebook"></i>
+<i class="fa-brands fa-x-twitter" title="X"></i>
+<i class="fa-brands fa-instagram" title="Instagram"></i>
+<i class="fa-brands fa-tiktok" title="TikTok"></i>
+<i class="fa-brands fa-dailymotion" title="Dailymotion"></i>
+<i class="fa-brands fa-twitch" title="Twitch"></i>
+<i class="fa-brands fa-reddit-alien" title="Reddit"></i>
+<i class="fa-brands fa-soundcloud" title="SoundCloud"></i>
+</p>
 <form novalidate>
 <div id="queueRows"></div>
 <div id="queueActions">
 <button type="button" id="addUrl"><i class="fa-solid fa-plus"></i> Add URL</button>
-<button type="submit" id="downloadSubmit" disabled><i class="fa-solid fa-download" aria-hidden="true"></i> <span class="button-label">Download</span></button>
+<button type="submit" id="downloadSubmit" disabled><i class="fa-solid fa-gears" aria-hidden="true"></i> <span class="button-label">Process</span></button>
 <button type="button" id="helplink" aria-label="Help" title="Help"><i class="fa-solid fa-circle-question" aria-hidden="true"></i></button>
 </div>
 <p id="output" aria-live="polite"></p>
@@ -713,8 +773,15 @@ function showOutput(message, className) {
 
 <div class="box list">
 <span id="reload"><i class="fa-solid fa-arrows-rotate"></i></span>
+<div class="downloads-heading">
 <h2>Recent Downloads</h2>
-<ul id="downloads"></ul>
+<div class="download-tabs" role="tablist" aria-label="Recent download type">
+<button type="button" class="download-tab" id="publicDownloadsTab" data-view="public" role="tab" aria-controls="publicDownloadsPanel" aria-selected="false" tabindex="-1" hidden>Public</button>
+<button type="button" class="download-tab active" id="privateDownloadsTab" data-view="private" role="tab" aria-controls="privateDownloadsPanel" aria-selected="true">Yours</button>
+</div>
+</div>
+<section class="download-panel" id="publicDownloadsPanel" role="tabpanel" aria-labelledby="publicDownloadsTab" hidden><ul id="publicDownloads"></ul></section>
+<section class="download-panel" id="privateDownloadsPanel" role="tabpanel" aria-labelledby="privateDownloadsTab"><ul id="privateDownloads"></ul></section>
 </div>
 </div>
 </body>
