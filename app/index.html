@@ -359,7 +359,8 @@ function addQueueRow(url, mode) {
   $modeButton.attr('aria-label', 'Download method: ' + selectedLabel[1]);
   $modeButton.append(
     $('<span class="queue-mode-description"></span>').append(
-      $('<span class="queue-mode-prefix"></span>').text('Converting to '),
+      $('<span class="queue-mode-verb"></span>').text('Converting '),
+      $('<span class="queue-mode-preposition"></span>').text('to '),
       $('<span class="queue-mode-label"></span>').text(selectedLabel[1])
     ),
     '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i>'

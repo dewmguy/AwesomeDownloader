@@ -37,9 +37,10 @@ checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing imple
 checkFrontend(str_contains($html, 'style.css?v=20261012-unified-queue-row'), 'The redesigned stylesheet is not cache-busted.');
 checkFrontend(str_contains($html, 'class="queue-mode-button" aria-haspopup="listbox"'), 'The styled method picker is missing.');
 checkFrontend(str_contains($html, 'class="queue-mode-option" role="option"'), 'The styled method options are missing.');
-checkFrontend(str_contains($html, "text('Converting to ')"), 'The integrated format picker does not explain the conversion choice.');
+checkFrontend(str_contains($html, "text('Converting ')") && str_contains($html, "text('to ')"), 'The integrated format picker does not explain the conversion choice.');
 checkFrontend(str_contains($html, '$fieldShell.append($validation, $url, $modePicker);'), 'The format picker is not merged into the URL field shell.');
 checkFrontend(str_contains($css, 'font-family: "SFMedium", sans-serif;'), 'The method picker font is not explicitly styled.');
+checkFrontend(str_contains($css, '.queue-mode-verb { display: none }'), 'The phone layout does not preserve useful URL space.');
 checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }'), 'The single-row layout still reserves delete-button space.');
 
 checkFrontend(str_contains($html, 'class="url-field-shell validation-idle"'), 'URL verification is not contained in the field row.');

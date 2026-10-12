@@ -784,9 +784,10 @@ label.container {
   .box { padding: 2rem }
   .queue-row { grid-template-columns: minmax(0, 1fr) 2.5rem }
   .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }
-  .url-field-shell .url-status { min-width: 5.85rem; padding: .5rem; font-size: .75rem }
-  .queue-mode-picker { min-width: 8.9rem }
+  .url-field-shell .url-status { min-width: 5.5rem; padding: .5rem; font-size: .75rem }
+  .queue-mode-picker { min-width: 6.2rem }
   .queue-mode-button { gap: .3rem; padding: .5rem; font-size: .75rem }
+  .queue-mode-verb { display: none }
   .queue-status { grid-template-columns: 4.5rem minmax(0, 1fr) }
   .queue-status-message { grid-column: 1 / -1; padding-left: 5rem }
   .list {
