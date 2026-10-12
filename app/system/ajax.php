@@ -1085,9 +1085,9 @@ function purgeExpiredContent($now = null) {
   }
 
   $cutoff = $now - CONTENT_RETENTION_SECONDS;
-  foreach (getFilteredFiles(FINAL_DIR, SUPPORTED_EXTENSIONS) as $file) {
+  foreach (array_diff(scandir(FINAL_DIR), ['.', '..', '.gitkeep']) as $file) {
     $path = FINAL_DIR . DIRECTORY_SEPARATOR . $file;
-    if (!isset($knownStorageNames[$file]) && filemtime($path) <= $cutoff && @unlink($path)) $removed['files']++;
+    if (is_file($path) && !isset($knownStorageNames[$file]) && filemtime($path) <= $cutoff && @unlink($path)) $removed['files']++;
   }
   foreach (glob(JOB_DIR . '/*.json') ?: [] as $path) {
     $job = json_decode((string)file_get_contents($path), true);
