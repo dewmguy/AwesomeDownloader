@@ -584,7 +584,7 @@ function updateQueueControls() {
   var isSubmitting = $submit.data('submitting') === true;
   $submit.prop('disabled', isSubmitting || jobCount === 0 || !allVerified);
   if (!isSubmitting) {
-    $submit.find('.button-label').text(jobCount > 1 ? 'Process Queue' : 'Process');
+    $submit.find('.button-label').text(jobCount > 1 ? 'Process URLs' : 'Process');
     $submit.find('i').removeClass('fa-download').toggleClass('fa-list-check', jobCount > 1).toggleClass('fa-gears', jobCount <= 1);
   }
   $('#addUrl').prop('disabled', rowCount >= maxQueueRows);
@@ -709,7 +709,7 @@ function showOutput(message, className) {
 <ol>
 <li>Paste a public media or playlist link. A green check means the link is verified; select the check to edit it.</li>
 <li>Choose each row's <span class="head">Converting to</span> format. Use <span class="head">Add URL</span> to process several links with different choices.</li>
-<li><span class="head">Process</span> prepares one link; <span class="head">Process Queue</span> prepares several. Every row must be filled and verified first.</li>
+<li><span class="head">Process</span> prepares one link; <span class="head">Process URLs</span> prepares several. Every row must be filled and verified first.</li>
 <li>When processing finishes, choose <span class="head">Save</span> beside a file to download it to your device.</li>
 </ol>
 <h2>Download Methods</h2>

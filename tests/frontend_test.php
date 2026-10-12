@@ -56,7 +56,7 @@ checkFrontend(str_contains($html, "$.post('/system/ajax.php', { validateUrl: url
 checkFrontend(str_contains($html, "url === '' || \$input.data('validationState') !== 'valid'"), 'Empty and unverified rows do not block processing.');
 checkFrontend(str_contains($html, "\$input.data('validationState') === 'valid' && !confirm"), 'Only verified queue rows should require removal confirmation.');
 
-checkFrontend(str_contains($html, "jobCount > 1 ? 'Process Queue' : 'Process'"), 'The process action label is not job-count aware.');
+checkFrontend(str_contains($html, "jobCount > 1 ? 'Process URLs' : 'Process'"), 'The process action label is not job-count aware.');
 checkFrontend(str_contains($html, 'fa-solid fa-gears'), 'The process action does not have a processing icon.');
 checkFrontend(str_contains($html, '>Save</span> beside a file to download it to your device.'), 'Help does not distinguish processing from saving.');
 checkFrontend(str_contains($html, 'id="copyTranscript"'), 'Transcript playback is missing its copy action.');
