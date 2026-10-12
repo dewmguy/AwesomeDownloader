@@ -105,34 +105,54 @@ form {
 }
 .queue-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 8rem 2.75rem;
+  grid-template-columns: minmax(0, 1fr) 2.75rem;
   gap: .5rem;
 }
-.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 8rem }
+.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }
 .url-field-shell {
   position: relative;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  min-height: 2.875rem;
   min-width: 0;
+  border: 2px solid rgba(255,255,255,.32);
+  background: rgba(50,50,50,.78);
+  box-shadow: 0 0 50px rgba(0,0,0,.5);
+  transition: border-color .15s ease, background .15s ease;
 }
-.url-field-shell .queue-url { padding-right: 2.75rem }
+.url-field-shell:hover, .url-field-shell:focus-within { border-color: #0A8; background: rgba(50,50,50,.9) }
+.url-field-shell.validation-checking { border-color: #FFF }
+.url-field-shell.validation-valid { border-color: #5FC }
+.url-field-shell.validation-invalid { border-color: #E15A67 }
+.url-field-shell .queue-url {
+  min-width: 0;
+  border: 0 !important;
+  padding: .65rem .75rem;
+  background: transparent;
+  box-shadow: none;
+}
 .url-field-shell .url-status {
-  position: absolute;
-  top: 2px;
-  right: 2px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 2.5rem;
-  height: calc(100% - 4px);
-  padding: 0;
-  background: transparent;
-  color: rgba(255,255,255,.5);
+  justify-content: flex-start;
+  gap: .4rem;
+  min-width: 6.45rem;
+  height: 100%;
+  border-right: 1px solid rgba(255,255,255,.18);
+  padding: .55rem .7rem;
+  background: rgba(0,0,0,.46);
+  color: rgba(255,255,255,.78);
+  font-family: "SFBold", sans-serif;
+  font-size: .82rem;
+  letter-spacing: .015em;
 }
-.url-field-shell .url-status:hover, .url-field-shell .url-status:focus-visible { background: rgba(0,0,0,.25); color: #FFF }
-.url-field-shell .url-status i { font-size: 1rem }
-.url-field-shell .url-status.valid { color: #5FC }
-.url-field-shell .url-status.invalid { color: #F99 }
-.url-field-shell .url-status.checking { color: #FFF; opacity: 1 }
-.url-field-shell .url-status:disabled:hover { background: transparent; color: #FFF }
+.url-field-shell .url-status:hover, .url-field-shell .url-status:focus-visible { background: rgba(0,0,0,.68); color: #FFF }
+.url-field-shell .url-status i { width: 1rem; font-size: .95rem; text-align: center }
+.url-field-shell .url-status.valid { background: rgba(0,125,96,.58); color: #D6FFF5 }
+.url-field-shell .url-status.invalid { background: rgba(159,37,52,.62); color: #FFF }
+.url-field-shell .url-status.checking { background: rgba(255,255,255,.16); color: #FFF; opacity: 1 }
+.url-field-shell .url-status:disabled { opacity: 1; cursor: wait }
+.url-field-shell .url-status:disabled:hover { background: rgba(255,255,255,.16); color: #FFF }
 #queueActions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 2.75rem;
@@ -146,7 +166,7 @@ form {
   background: #C33;
   color: #FFF;
 }
-.queue-mode-picker { position: relative }
+.queue-mode-picker { position: relative; min-width: 10.4rem }
 .queue-mode-button {
   display: flex;
   align-items: center;
@@ -154,19 +174,20 @@ form {
   gap: .5rem;
   width: 100%;
   height: 100%;
-  border: 2px solid rgba(255,255,255,.25);
-  padding: 10px;
-  background: rgba(50,50,50,.75);
+  border-left: 1px solid rgba(255,255,255,.18);
+  padding: .55rem .7rem;
+  background: rgba(0,0,0,.28);
   color: #FFF;
   font-family: "SFMedium", sans-serif;
-  font-size: 1rem;
+  font-size: .82rem;
   text-align: left;
+  white-space: nowrap;
 }
 .queue-mode-button:hover, .queue-mode-button:focus-visible, .queue-mode-picker.open .queue-mode-button {
-  border-color: #0A8;
-  background: rgba(50,50,50,.9);
+  background: rgba(0,0,0,.5);
   color: #FFF;
 }
+.queue-mode-label { color: #5FC; font-family: "SFBold", sans-serif }
 .queue-mode-button i {
   font-size: .8rem;
   transition: transform .15s ease;
@@ -761,8 +782,11 @@ label.container {
   }
   #helpcloser { left: unset; right: 0; position: fixed }
   .box { padding: 2rem }
-  .queue-row { grid-template-columns: minmax(0, 1fr) 7rem 2.5rem }
-  .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 7rem }
+  .queue-row { grid-template-columns: minmax(0, 1fr) 2.5rem }
+  .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }
+  .url-field-shell .url-status { min-width: 5.85rem; padding: .5rem; font-size: .75rem }
+  .queue-mode-picker { min-width: 8.9rem }
+  .queue-mode-button { gap: .3rem; padding: .5rem; font-size: .75rem }
   .queue-status { grid-template-columns: 4.5rem minmax(0, 1fr) }
   .queue-status-message { grid-column: 1 / -1; padding-left: 5rem }
   .list {

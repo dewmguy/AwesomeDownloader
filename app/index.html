@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20261012-private-downloads" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20261012-unified-queue-row" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -333,9 +333,8 @@ function addQueueRow(url, mode) {
   queueRowCounter++;
   var $row = $('<div class="queue-row"></div>');
   var $url = $('<input type="url" class="queue-url" inputmode="url" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048" enterkeyhint="done" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL" aria-invalid="false">').val(url || '');
-  var $fieldShell = $('<div class="url-field-shell"></div>');
-  var $validation = $('<button type="button" class="url-status idle" aria-label="URL not verified" title="Paste a link to verify it"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span class="visually-hidden" aria-live="polite">URL not verified</span></button>');
-  $fieldShell.append($url, $validation);
+  var $fieldShell = $('<div class="url-field-shell validation-idle"></div>');
+  var $validation = $('<button type="button" class="url-status idle" aria-label="URL not verified" title="Paste a link to verify it"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span class="url-status-label" aria-hidden="true">Waiting</span><span class="visually-hidden" aria-live="polite">URL not verified</span></button>');
   var selectedMode = mode || 'base';
   var menuId = 'queueModeMenu' + queueRowCounter;
   var $mode = $('<input type="hidden" class="queue-mode">');
@@ -358,10 +357,17 @@ function addQueueRow(url, mode) {
   var selectedLabel = choices.filter(function(choice) { return choice[0] === selectedMode; })[0];
   $mode.val(selectedMode);
   $modeButton.attr('aria-label', 'Download method: ' + selectedLabel[1]);
-  $modeButton.append($('<span class="queue-mode-label"></span>').text(selectedLabel[1]), '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i>');
+  $modeButton.append(
+    $('<span class="queue-mode-description"></span>').append(
+      $('<span class="queue-mode-prefix"></span>').text('Converting to '),
+      $('<span class="queue-mode-label"></span>').text(selectedLabel[1])
+    ),
+    '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i>'
+  );
   $modePicker.append($mode, $modeButton, $modeMenu);
   var $remove = $('<button type="button" class="remove-url" aria-label="Remove URL from queue" title="Remove from queue"><i class="fa-solid fa-trash-can" aria-hidden="true"></i></button>');
-  $row.append($fieldShell, $modePicker, $remove);
+  $fieldShell.append($validation, $url, $modePicker);
+  $row.append($fieldShell, $remove);
   $('#queueRows').append($row);
   updateQueueControls();
 }
@@ -457,17 +463,30 @@ function setUrlValidation($input, state, message) {
     valid: 'fa-solid fa-circle-check',
     invalid: 'fa-solid fa-circle-exclamation'
   };
-  var $status = $input.closest('.url-field-shell').find('.url-status');
+  var labels = {
+    idle: 'Waiting',
+    checking: 'Checking',
+    valid: 'Verified',
+    invalid: 'Error'
+  };
+  var $shell = $input.closest('.url-field-shell');
+  var $status = $shell.find('.url-status');
   var accessibleMessage = message || (state === 'idle' ? 'URL not verified' : 'URL status');
   $input.removeClass('brokenurl validurl checkingurl')
     .addClass(state === 'invalid' ? 'brokenurl' : state === 'valid' ? 'validurl' : state === 'checking' ? 'checkingurl' : '')
     .attr('aria-invalid', state === 'invalid' ? 'true' : 'false')
     .prop('readonly', state === 'checking' || state === 'valid');
+  $shell.removeClass('validation-idle validation-checking validation-valid validation-invalid')
+    .addClass('validation-' + (state || 'idle'));
   $status.removeClass('idle checking valid invalid').addClass(state || 'idle')
     .attr({ 'aria-label': accessibleMessage, title: state === 'valid' ? accessibleMessage + ' Click to edit this URL.' : accessibleMessage })
     .prop('disabled', state === 'checking')
     .empty()
-    .append($('<i aria-hidden="true"></i>').attr('class', icons[state] || icons.idle), $('<span class="visually-hidden" aria-live="polite"></span>').text(accessibleMessage));
+    .append(
+      $('<i aria-hidden="true"></i>').attr('class', icons[state] || icons.idle),
+      $('<span class="url-status-label" aria-hidden="true"></span>').text(labels[state] || labels.idle),
+      $('<span class="visually-hidden" aria-live="polite"></span>').text(accessibleMessage)
+    );
 }
 
 function resetUrlValidation($input) {
@@ -688,7 +707,7 @@ function showOutput(message, className) {
 <h2>How to Use the Downloader</h2>
 <ol>
 <li>Paste a public media or playlist link. A green check means the link is verified; select the check to edit it.</li>
-<li>Choose a method. Use <span class="head">Add URL</span> to process several links with different choices.</li>
+<li>Choose each row's <span class="head">Converting to</span> format. Use <span class="head">Add URL</span> to process several links with different choices.</li>
 <li><span class="head">Process</span> prepares one link; <span class="head">Process Queue</span> prepares several. Every row must be filled and verified first.</li>
 <li>When processing finishes, choose <span class="head">Save</span> beside a file to download it to your device.</li>
 </ol>

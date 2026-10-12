@@ -34,17 +34,20 @@ checkFrontend(str_contains($css, '.icons .fa-dailymotion::after') && str_contain
 checkFrontend(str_contains($css, 'height: 1.8rem;') && str_contains($css, 'width: 1.8rem;'), 'The Facebook white background size is incorrect.');
 
 checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing implementation name remains in the page.');
-checkFrontend(str_contains($html, 'style.css?v=20261012-private-downloads'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'style.css?v=20261012-unified-queue-row'), 'The redesigned stylesheet is not cache-busted.');
 checkFrontend(str_contains($html, 'class="queue-mode-button" aria-haspopup="listbox"'), 'The styled method picker is missing.');
 checkFrontend(str_contains($html, 'class="queue-mode-option" role="option"'), 'The styled method options are missing.');
+checkFrontend(str_contains($html, "text('Converting to ')"), 'The integrated format picker does not explain the conversion choice.');
+checkFrontend(str_contains($html, '$fieldShell.append($validation, $url, $modePicker);'), 'The format picker is not merged into the URL field shell.');
 checkFrontend(str_contains($css, 'font-family: "SFMedium", sans-serif;'), 'The method picker font is not explicitly styled.');
-checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 8rem }'), 'The single-row desktop layout reserves delete-button space.');
-checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) 7rem }'), 'The single-row mobile layout reserves delete-button space.');
+checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }'), 'The single-row layout still reserves delete-button space.');
 
-checkFrontend(str_contains($html, 'class="url-field-shell"'), 'URL verification is not contained in the field row.');
+checkFrontend(str_contains($html, 'class="url-field-shell validation-idle"'), 'URL verification is not contained in the field row.');
 checkFrontend(str_contains($html, 'class="url-status idle"'), 'The compact URL status action is missing.');
+checkFrontend(str_contains($html, 'class="url-status-label"') && str_contains($html, "invalid: 'Error'") && str_contains($html, "checking: 'Checking'") && str_contains($html, "valid: 'Verified'"), 'The visible one-word URL statuses are incomplete.');
 checkFrontend(!str_contains($html, 'class="url-validation"'), 'URL validation still adds a second row.');
 checkFrontend(str_contains($css, '.url-field-shell .url-status'), 'The compact URL status is not styled.');
+checkFrontend(str_contains($css, 'grid-template-columns: max-content minmax(0, 1fr) max-content;'), 'The unified status, URL, and format layout is missing.');
 checkFrontend(str_contains($html, "$('#queueRows').on('paste', '.queue-url'"), 'Pasted URLs are not checked immediately.');
 checkFrontend(str_contains($html, ".prop('readonly', state === 'checking' || state === 'valid')"), 'The URL is not locked while checking and after verification.');
 checkFrontend(str_contains($html, "state === 'valid' ? accessibleMessage + ' Click to edit this URL.'"), 'The verified state does not explain how to edit the locked URL.');
