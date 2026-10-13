@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20261012-featured-icons" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20261012-duplicate-error" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -398,25 +398,21 @@ function queueUrlIdentity(value) {
 }
 
 function refreshDuplicateOutputChoices() {
-  var rows = [];
-  var combinationCounts = {};
+  var usedModesByUrl = {};
+  var allUnique = true;
 
   $('.queue-row').each(function() {
     var $row = $(this);
-    var url = $row.find('.queue-url').val().trim();
+    var $input = $row.find('.queue-url');
+    var url = $input.val().trim();
     var mode = $row.find('.queue-mode').val();
     var urlKey = url === '' ? '' : queueUrlIdentity(url);
-    var combinationKey = urlKey + '\n' + mode;
-    rows.push({ row: $row, urlKey: urlKey, mode: mode, combinationKey: combinationKey });
-    if (urlKey !== '') combinationCounts[combinationKey] = (combinationCounts[combinationKey] || 0) + 1;
-  });
-
-  var allUnique = true;
-  rows.forEach(function(item) {
-    var $picker = item.row.find('.queue-mode-picker');
+    var verified = url !== '' && $input.data('validationState') === 'valid' && $input.data('validatedUrl') === url;
+    var usedModes = usedModesByUrl[urlKey] || {};
+    var duplicated = verified && usedModes[mode] === true;
+    var $picker = $row.find('.queue-mode-picker');
     var $button = $picker.find('.queue-mode-button');
     var label = $picker.find('.queue-mode-label').text();
-    var duplicated = item.urlKey !== '' && combinationCounts[item.combinationKey] > 1;
     if (duplicated) allUnique = false;
 
     $picker.toggleClass('duplicate-output', duplicated);
@@ -430,11 +426,23 @@ function refreshDuplicateOutputChoices() {
 
     $picker.find('.queue-mode-option').each(function() {
       var optionMode = $(this).data('mode');
-      var usedElsewhere = item.urlKey !== '' && rows.some(function(other) {
-        return other !== item && other.urlKey === item.urlKey && other.mode === optionMode;
-      });
-      $(this).prop('disabled', usedElsewhere).attr('aria-disabled', usedElsewhere ? 'true' : 'false');
+      var usedEarlier = verified && usedModes[optionMode] === true;
+      $(this).prop('disabled', usedEarlier).attr('aria-disabled', usedEarlier ? 'true' : 'false');
     });
+
+    if (duplicated) {
+      $input.data('duplicateOutput', true);
+      setUrlValidation($input, 'invalid', 'This URL is already queued as ' + label + '. Choose a different format.', { keepReadonly: true });
+    }
+    else if ($input.data('duplicateOutput')) {
+      $input.removeData('duplicateOutput');
+      if (verified) setUrlValidation($input, 'valid', $input.data('validationMessage') || 'Verified media link.');
+    }
+
+    if (verified) {
+      usedModes[mode] = true;
+      usedModesByUrl[urlKey] = usedModes;
+    }
   });
 
   return allUnique;
@@ -514,7 +522,7 @@ function validateUrlShape(value) {
   catch (error) { return { valid: false, message: 'Use a complete http:// or https:// URL.' }; }
 }
 
-function setUrlValidation($input, state, message) {
+function setUrlValidation($input, state, message, options) {
   var icons = {
     idle: 'fa-solid fa-shield-halved',
     checking: 'fa-solid fa-circle-notch fa-spin',
@@ -530,10 +538,12 @@ function setUrlValidation($input, state, message) {
   var $shell = $input.closest('.url-field-shell');
   var $status = $shell.find('.url-status');
   var accessibleMessage = message || (state === 'idle' ? 'URL not verified' : 'URL status');
+  var keepReadonly = options && options.keepReadonly === true;
+  if (state === 'valid') $input.data('validationMessage', accessibleMessage);
   $input.removeClass('brokenurl validurl checkingurl')
     .addClass(state === 'invalid' ? 'brokenurl' : state === 'valid' ? 'validurl' : state === 'checking' ? 'checkingurl' : '')
     .attr('aria-invalid', state === 'invalid' ? 'true' : 'false')
-    .prop('readonly', state === 'checking' || state === 'valid');
+    .prop('readonly', keepReadonly || state === 'checking' || state === 'valid');
   $shell.removeClass('validation-idle validation-checking validation-valid validation-invalid')
     .addClass('validation-' + (state || 'idle'));
   $status.removeClass('idle checking valid invalid').addClass(state || 'idle')
@@ -548,7 +558,7 @@ function setUrlValidation($input, state, message) {
 }
 
 function resetUrlValidation($input) {
-  $input.removeData('validatedUrl validationState validationPromise validationRequest');
+  $input.removeData('validatedUrl validationState validationPromise validationRequest validationMessage duplicateOutput');
   setUrlValidation($input, 'idle', 'URL not verified');
 }
 

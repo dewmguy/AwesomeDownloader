@@ -679,6 +679,12 @@ input[type=submit]:disabled:hover, button:disabled:hover {
  background: #C44;
  color: #FFF;
 }
+#downloadSubmit:disabled,
+#downloadSubmit:disabled:hover {
+ background: #666;
+ color: #BBB;
+ opacity: .68;
+}
 
 label, .label {
  font-family: "SFBold";

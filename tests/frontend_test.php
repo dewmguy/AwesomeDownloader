@@ -34,7 +34,7 @@ checkFrontend(str_contains($css, '.icons .fa-dailymotion::after') && str_contain
 checkFrontend(str_contains($css, 'height: 1.8rem;') && str_contains($css, 'width: 1.8rem;'), 'The Facebook white background size is incorrect.');
 
 checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing implementation name remains in the page.');
-checkFrontend(str_contains($html, 'style.css?v=20261012-featured-icons'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'style.css?v=20261012-duplicate-error'), 'The redesigned stylesheet is not cache-busted.');
 checkFrontend((bool)preg_match('/\.icons-featured\s*\{[^}]*background:\s*transparent;/s', $css), 'The featured icon strip still has a background.');
 checkFrontend(str_contains($css, '.icons-featured .fa-youtube,') && str_contains($css, '.icons-featured .fa-dailymotion { overflow: hidden }'), 'Featured brand-icon background layers are not clipped inside their glyph boxes.');
 checkFrontend((bool)preg_match('/\.icons-featured \.fa-facebook::after\s*\{[^}]*left:\s*5px;[^}]*height:\s*1\.7rem;[^}]*width:\s*1\.7rem;/s', $css), 'The featured Facebook backing is not safely inset.');
@@ -53,7 +53,7 @@ checkFrontend(!str_contains($html, 'class="url-validation"'), 'URL validation st
 checkFrontend(str_contains($css, '.url-field-shell .url-status'), 'The compact URL status is not styled.');
 checkFrontend(str_contains($css, 'grid-template-columns: max-content minmax(0, 1fr) max-content;'), 'The unified status, URL, and format layout is missing.');
 checkFrontend(str_contains($html, "$('#queueRows').on('paste', '.queue-url'"), 'Pasted URLs are not checked immediately.');
-checkFrontend(str_contains($html, ".prop('readonly', state === 'checking' || state === 'valid')"), 'The URL is not locked while checking and after verification.');
+checkFrontend(str_contains($html, ".prop('readonly', keepReadonly || state === 'checking' || state === 'valid')"), 'The URL is not locked while checking, after verification, or during a duplicate-output error.');
 checkFrontend(str_contains($html, "state === 'valid' ? accessibleMessage + ' Click to edit this URL.'"), 'The verified state does not explain how to edit the locked URL.');
 checkFrontend(str_contains($html, "$.post('/system/ajax.php', { validateUrl: url })"), 'Authoritative URL verification is missing.');
 checkFrontend(str_contains($html, "url === '' || \$input.data('validationState') !== 'valid'"), 'Empty and unverified rows do not block processing.');
@@ -62,7 +62,10 @@ checkFrontend(str_contains($html, "\$input.data('validationState') === 'valid' &
 checkFrontend(str_contains($html, "jobCount > 1 ? 'Process URLs' : 'Process'"), 'The process action label is not job-count aware.');
 checkFrontend(str_contains($html, 'refreshDuplicateOutputChoices()') && str_contains($html, '!allOutputsUnique'), 'Duplicate URL/output pairs do not disable processing.');
 checkFrontend(str_contains($html, "'Duplicate ' : 'to '"), 'Duplicate output choices are not identified in the format control.');
+checkFrontend(str_contains($html, "setUrlValidation(\$input, 'invalid', 'This URL is already queued as '") && str_contains($html, '{ keepReadonly: true }'), 'A later duplicate URL does not enter a locked error state.');
+checkFrontend(str_contains($html, 'usedModesByUrl') && str_contains($html, 'usedModes[mode] = true'), 'Duplicate errors are not assigned in queue order.');
 checkFrontend(str_contains($css, '.queue-mode-picker.duplicate-output .queue-mode-button') && str_contains($css, '.queue-mode-option:disabled'), 'Duplicate output choices are not visibly styled or disabled.');
+checkFrontend(str_contains($css, '#downloadSubmit:disabled,') && str_contains($css, 'background: #666;'), 'The disabled Process action is not gray.');
 checkFrontend(str_contains($html, 'a repeated link must use a different output'), 'Help does not explain unique outputs for repeated links.');
 checkFrontend(str_contains($html, 'fa-solid fa-gears'), 'The process action does not have a processing icon.');
 checkFrontend(str_contains($html, '>Save</span> beside a file to download it to your device.'), 'Help does not distinguish processing from saving.');
