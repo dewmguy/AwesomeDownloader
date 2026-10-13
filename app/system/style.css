@@ -102,6 +102,7 @@ form {
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: .25rem;
+  box-shadow: 0 0 50px rgba(0,0,0,.5);
 }
 .queue-row {
   display: grid;
@@ -117,7 +118,6 @@ form {
   min-width: 0;
   border: 2px solid rgba(255,255,255,.32);
   background: rgba(50,50,50,.78);
-  box-shadow: 0 0 50px rgba(0,0,0,.5);
   transition: border-color .15s ease, background .15s ease;
 }
 .url-field-shell:hover, .url-field-shell:focus-within { border-color: #0A8; background: rgba(50,50,50,.9) }

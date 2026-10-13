@@ -34,7 +34,7 @@ checkFrontend(str_contains($css, '.icons .fa-dailymotion::after') && str_contain
 checkFrontend(str_contains($css, 'height: 1.8rem;') && str_contains($css, 'width: 1.8rem;'), 'The Facebook white background size is incorrect.');
 
 checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing implementation name remains in the page.');
-checkFrontend(str_contains($html, 'style.css?v=20261012-duplicate-error'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'style.css?v=20261012-queue-shadow'), 'The redesigned stylesheet is not cache-busted.');
 checkFrontend((bool)preg_match('/\.icons-featured\s*\{[^}]*background:\s*transparent;/s', $css), 'The featured icon strip still has a background.');
 checkFrontend(str_contains($css, '.icons-featured .fa-youtube,') && str_contains($css, '.icons-featured .fa-dailymotion { overflow: hidden }'), 'Featured brand-icon background layers are not clipped inside their glyph boxes.');
 checkFrontend((bool)preg_match('/\.icons-featured \.fa-facebook::after\s*\{[^}]*left:\s*5px;[^}]*height:\s*1\.7rem;[^}]*width:\s*1\.7rem;/s', $css), 'The featured Facebook backing is not safely inset.');
@@ -45,6 +45,8 @@ checkFrontend(str_contains($html, '$fieldShell.append($validation, $url, $modePi
 checkFrontend(str_contains($css, 'font-family: "SFMedium", sans-serif;'), 'The method picker font is not explicitly styled.');
 checkFrontend(str_contains($css, '.queue-mode-verb { display: none }'), 'The phone layout does not preserve useful URL space.');
 checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }'), 'The single-row layout still reserves delete-button space.');
+checkFrontend((bool)preg_match('/#queueRows\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;[^}]*box-shadow:\s*0 0 50px rgba\(0,0,0,\.5\);/s', $css), 'The queue scroller does not own the unclipped queue shadow.');
+checkFrontend(!(bool)preg_match('/\.url-field-shell\s*\{[^}]*box-shadow:/s', $css), 'URL fields still carry a shadow that the queue scroller clips.');
 
 checkFrontend(str_contains($html, 'class="url-field-shell validation-idle"'), 'URL verification is not contained in the field row.');
 checkFrontend(str_contains($html, 'class="url-status idle"'), 'The compact URL status action is missing.');
