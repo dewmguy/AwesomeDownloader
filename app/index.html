@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20261012-unified-queue-row" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20261012-unique-outputs" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -223,13 +223,13 @@ $('#queueRows').on('click', '.queue-mode-button', function(event) {
 $('#queueRows').on('click', '.queue-mode-option', function(event) {
   event.stopPropagation();
   var $option = $(this);
+  if ($option.prop('disabled')) return;
   var $picker = $option.closest('.queue-mode-picker');
   var mode = $option.data('mode');
-  $picker.find('.queue-mode').val(mode).trigger('change');
   $picker.find('.queue-mode-label').text($option.text());
-  $picker.find('.queue-mode-button').attr('aria-label', 'Download method: ' + $option.text());
   $picker.find('.queue-mode-option').attr('aria-selected', 'false');
   $option.attr('aria-selected', 'true');
+  $picker.find('.queue-mode').val(mode).trigger('change');
   closeModeMenus();
   $picker.find('.queue-mode-button').focus();
 });
@@ -392,6 +392,54 @@ function closeModeMenus() {
   $('.queue-mode-menu').hide();
 }
 
+function queueUrlIdentity(value) {
+  try { return new URL(value).href; }
+  catch (error) { return value.trim(); }
+}
+
+function refreshDuplicateOutputChoices() {
+  var rows = [];
+  var combinationCounts = {};
+
+  $('.queue-row').each(function() {
+    var $row = $(this);
+    var url = $row.find('.queue-url').val().trim();
+    var mode = $row.find('.queue-mode').val();
+    var urlKey = url === '' ? '' : queueUrlIdentity(url);
+    var combinationKey = urlKey + '\n' + mode;
+    rows.push({ row: $row, urlKey: urlKey, mode: mode, combinationKey: combinationKey });
+    if (urlKey !== '') combinationCounts[combinationKey] = (combinationCounts[combinationKey] || 0) + 1;
+  });
+
+  var allUnique = true;
+  rows.forEach(function(item) {
+    var $picker = item.row.find('.queue-mode-picker');
+    var $button = $picker.find('.queue-mode-button');
+    var label = $picker.find('.queue-mode-label').text();
+    var duplicated = item.urlKey !== '' && combinationCounts[item.combinationKey] > 1;
+    if (duplicated) allUnique = false;
+
+    $picker.toggleClass('duplicate-output', duplicated);
+    $picker.find('.queue-mode-verb').text(duplicated ? '' : 'Converting ');
+    $picker.find('.queue-mode-preposition').text(duplicated ? 'Duplicate ' : 'to ');
+    $button.attr({
+      'aria-invalid': duplicated ? 'true' : 'false',
+      'aria-label': duplicated ? 'Duplicate output: ' + label + ' is already queued for this URL. Choose a different format.' : 'Download method: ' + label,
+      title: duplicated ? 'This URL is already queued as ' + label + '. Choose a different format.' : ''
+    });
+
+    $picker.find('.queue-mode-option').each(function() {
+      var optionMode = $(this).data('mode');
+      var usedElsewhere = item.urlKey !== '' && rows.some(function(other) {
+        return other !== item && other.urlKey === item.urlKey && other.mode === optionMode;
+      });
+      $(this).prop('disabled', usedElsewhere).attr('aria-disabled', usedElsewhere ? 'true' : 'false');
+    });
+  });
+
+  return allUnique;
+}
+
 function resetQueueRows() {
   $('#queueRows').empty();
   addQueueRow();
@@ -401,6 +449,7 @@ function collectQueueItems() {
   var items = [];
   var invalid = false;
   var firstError = '';
+  var queuedOutputs = {};
   $('.queue-row').each(function() {
     var $input = $(this).find('.queue-url');
     var url = $input.val().trim();
@@ -415,7 +464,15 @@ function collectQueueItems() {
       invalid = true;
       return;
     }
-    items.push({ url: url, mode: $(this).find('.queue-mode').val() });
+    var mode = $(this).find('.queue-mode').val();
+    var outputKey = queueUrlIdentity(url) + '\n' + mode;
+    if (queuedOutputs[outputKey]) {
+      if (firstError === '') firstError = 'Choose a different output format when processing the same URL more than once.';
+      invalid = true;
+      return;
+    }
+    queuedOutputs[outputKey] = true;
+    items.push({ url: url, mode: mode });
   });
   if (invalid) {
     showOutput(firstError, 'error');
@@ -572,6 +629,7 @@ function setQueueSubmitting(submitting, label) {
 function updateQueueControls() {
   var jobCount = 0;
   var allVerified = true;
+  var allOutputsUnique = refreshDuplicateOutputChoices();
   $('.queue-url').each(function() {
     var $input = $(this);
     var url = $input.val().trim();
@@ -582,7 +640,7 @@ function updateQueueControls() {
   var hasRemoveButtons = rowCount > 1;
   var $submit = $('#downloadSubmit');
   var isSubmitting = $submit.data('submitting') === true;
-  $submit.prop('disabled', isSubmitting || jobCount === 0 || !allVerified);
+  $submit.prop('disabled', isSubmitting || jobCount === 0 || !allVerified || !allOutputsUnique);
   if (!isSubmitting) {
     $submit.find('.button-label').text(jobCount > 1 ? 'Process URLs' : 'Process');
     $submit.find('i').removeClass('fa-download').toggleClass('fa-list-check', jobCount > 1).toggleClass('fa-gears', jobCount <= 1);
@@ -708,7 +766,7 @@ function showOutput(message, className) {
 <h2>How to Use the Downloader</h2>
 <ol>
 <li>Paste a public media or playlist link. A green check means the link is verified; select the check to edit it.</li>
-<li>Choose each row's <span class="head">Converting to</span> format. Use <span class="head">Add URL</span> to process several links with different choices.</li>
+<li>Choose each row's <span class="head">Converting to</span> format. Use <span class="head">Add URL</span> to process several links; a repeated link must use a different output.</li>
 <li><span class="head">Process</span> prepares one link; <span class="head">Process URLs</span> prepares several. Every row must be filled and verified first.</li>
 <li>When processing finishes, choose <span class="head">Save</span> beside a file to download it to your device.</li>
 </ol>

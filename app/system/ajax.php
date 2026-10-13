@@ -389,6 +389,23 @@ function formatExtractorName($extractor) {
   return $extractor;
 }
 
+function queueUrlIdentity($url) {
+  $url = trim((string)$url);
+  $parts = parse_url($url);
+  if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) return $url;
+
+  $scheme = strtolower($parts['scheme']);
+  $host = strtolower($parts['host']);
+  $port = isset($parts['port']) && !(($scheme === 'http' && $parts['port'] === 80) || ($scheme === 'https' && $parts['port'] === 443))
+    ? ':' . $parts['port']
+    : '';
+  $path = $parts['path'] ?? '/';
+  if ($path === '') $path = '/';
+  $query = isset($parts['query']) ? '?' . $parts['query'] : '';
+  $fragment = isset($parts['fragment']) ? '#' . $parts['fragment'] : '';
+  return $scheme . '://' . $host . $port . $path . $query . $fragment;
+}
+
 function urlValidationCachePath($url) {
   return URL_VALIDATION_CACHE_DIR . DIRECTORY_SEPARATOR . hash('sha256', $url) . '.json';
 }
@@ -474,6 +491,7 @@ function normalizeQueueItems($rawItems) {
 
   $items = [];
   $errors = [];
+  $queuedOutputs = [];
   foreach ($rawItems as $index => $rawItem) {
     $number = $index + 1;
     $url = trim((string)($rawItem['url'] ?? ''));
@@ -481,6 +499,13 @@ function normalizeQueueItems($rawItems) {
     $urlValidation = validateUrlStructure($url);
     if (!$urlValidation['valid']) $errors[] = "URL $number: " . $urlValidation['message'];
     if (!in_array($mode, VALID_MODES, true)) $errors[] = "URL $number has an invalid download choice.";
+    if ($urlValidation['valid'] && in_array($mode, VALID_MODES, true)) {
+      $outputKey = queueUrlIdentity($url) . "\n" . $mode;
+      if (isset($queuedOutputs[$outputKey])) {
+        $errors[] = "URL $number duplicates URL " . $queuedOutputs[$outputKey] . ' with the same output choice.';
+      }
+      else $queuedOutputs[$outputKey] = $number;
+    }
     $items[] = ['url' => $url, 'mode' => $mode];
   }
   return ['items' => $items, 'errors' => $errors];

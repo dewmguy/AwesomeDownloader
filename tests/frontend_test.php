@@ -34,7 +34,7 @@ checkFrontend(str_contains($css, '.icons .fa-dailymotion::after') && str_contain
 checkFrontend(str_contains($css, 'height: 1.8rem;') && str_contains($css, 'width: 1.8rem;'), 'The Facebook white background size is incorrect.');
 
 checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing implementation name remains in the page.');
-checkFrontend(str_contains($html, 'style.css?v=20261012-unified-queue-row'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'style.css?v=20261012-unique-outputs'), 'The redesigned stylesheet is not cache-busted.');
 checkFrontend(str_contains($html, 'class="queue-mode-button" aria-haspopup="listbox"'), 'The styled method picker is missing.');
 checkFrontend(str_contains($html, 'class="queue-mode-option" role="option"'), 'The styled method options are missing.');
 checkFrontend(str_contains($html, "text('Converting ')") && str_contains($html, "text('to ')"), 'The integrated format picker does not explain the conversion choice.');
@@ -57,6 +57,10 @@ checkFrontend(str_contains($html, "url === '' || \$input.data('validationState')
 checkFrontend(str_contains($html, "\$input.data('validationState') === 'valid' && !confirm"), 'Only verified queue rows should require removal confirmation.');
 
 checkFrontend(str_contains($html, "jobCount > 1 ? 'Process URLs' : 'Process'"), 'The process action label is not job-count aware.');
+checkFrontend(str_contains($html, 'refreshDuplicateOutputChoices()') && str_contains($html, '!allOutputsUnique'), 'Duplicate URL/output pairs do not disable processing.');
+checkFrontend(str_contains($html, "'Duplicate ' : 'to '"), 'Duplicate output choices are not identified in the format control.');
+checkFrontend(str_contains($css, '.queue-mode-picker.duplicate-output .queue-mode-button') && str_contains($css, '.queue-mode-option:disabled'), 'Duplicate output choices are not visibly styled or disabled.');
+checkFrontend(str_contains($html, 'a repeated link must use a different output'), 'Help does not explain unique outputs for repeated links.');
 checkFrontend(str_contains($html, 'fa-solid fa-gears'), 'The process action does not have a processing icon.');
 checkFrontend(str_contains($html, '>Save</span> beside a file to download it to your device.'), 'Help does not distinguish processing from saving.');
 checkFrontend(str_contains($html, 'id="copyTranscript"'), 'Transcript playback is missing its copy action.');

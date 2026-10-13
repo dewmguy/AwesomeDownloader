@@ -19,6 +19,17 @@ $batch = normalizeQueueItems(json_encode([
 ]));
 check(count($batch['items']) === 3 && empty($batch['errors']), 'Valid mixed-mode queue was rejected.');
 
+$duplicateOutput = normalizeQueueItems([
+  ['url' => 'https://YOUTUBE.com:443/watch?v=one', 'mode' => 'mp3'],
+  ['url' => 'https://youtube.com/watch?v=one', 'mode' => 'mp3']
+]);
+check(count($duplicateOutput['errors']) === 1 && str_contains($duplicateOutput['errors'][0], 'duplicates URL 1'), 'The same URL and output choice was accepted twice.');
+$distinctOutputs = normalizeQueueItems([
+  ['url' => 'https://youtube.com/watch?v=one', 'mode' => 'mp3'],
+  ['url' => 'https://youtube.com/watch?v=one', 'mode' => 'gif']
+]);
+check(empty($distinctOutputs['errors']), 'The same URL was not allowed to use different output choices.');
+
 $invalid = normalizeQueueItems([['url' => 'file:///etc/passwd', 'mode' => 'unknown']]);
 check(count($invalid['errors']) === 2, 'Invalid URL and mode were not both rejected.');
 

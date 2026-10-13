@@ -193,6 +193,11 @@ form {
   transition: transform .15s ease;
 }
 .queue-mode-picker.open .queue-mode-button i { transform: rotate(180deg) }
+.queue-mode-picker.duplicate-output .queue-mode-button {
+  background: rgba(159,37,52,.62);
+  color: #FFF;
+}
+.queue-mode-picker.duplicate-output .queue-mode-label { color: #FFF }
 .queue-mode-menu {
   position: fixed;
   display: none;
@@ -222,6 +227,13 @@ form {
 }
 .queue-mode-option[aria-selected="true"]:hover, .queue-mode-option[aria-selected="true"]:focus-visible {
   color: #111;
+}
+.queue-mode-option:disabled,
+.queue-mode-option:disabled:hover,
+.queue-mode-option:disabled:focus-visible {
+  background: transparent;
+  color: rgba(255,255,255,.38);
+  cursor: not-allowed;
 }
 h2 {
  color: #FFF;
