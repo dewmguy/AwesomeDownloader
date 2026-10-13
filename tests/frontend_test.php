@@ -34,7 +34,10 @@ checkFrontend(str_contains($css, '.icons .fa-dailymotion::after') && str_contain
 checkFrontend(str_contains($css, 'height: 1.8rem;') && str_contains($css, 'width: 1.8rem;'), 'The Facebook white background size is incorrect.');
 
 checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing implementation name remains in the page.');
-checkFrontend(str_contains($html, 'style.css?v=20261012-unique-outputs'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'style.css?v=20261012-featured-icons'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend((bool)preg_match('/\.icons-featured\s*\{[^}]*background:\s*transparent;/s', $css), 'The featured icon strip still has a background.');
+checkFrontend(str_contains($css, '.icons-featured .fa-youtube,') && str_contains($css, '.icons-featured .fa-dailymotion { overflow: hidden }'), 'Featured brand-icon background layers are not clipped inside their glyph boxes.');
+checkFrontend((bool)preg_match('/\.icons-featured \.fa-facebook::after\s*\{[^}]*left:\s*5px;[^}]*height:\s*1\.7rem;[^}]*width:\s*1\.7rem;/s', $css), 'The featured Facebook backing is not safely inset.');
 checkFrontend(str_contains($html, 'class="queue-mode-button" aria-haspopup="listbox"'), 'The styled method picker is missing.');
 checkFrontend(str_contains($html, 'class="queue-mode-option" role="option"'), 'The styled method options are missing.');
 checkFrontend(str_contains($html, "text('Converting ')") && str_contains($html, "text('to ')"), 'The integrated format picker does not explain the conversion choice.');

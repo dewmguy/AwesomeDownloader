@@ -424,8 +424,7 @@ h1.title {
 .icons-featured {
  max-width: 32rem;
  padding: .15rem .25rem;
- border-radius: .25rem;
- background: rgba(0,0,0,.15);
+ background: transparent;
 }
 .icons-featured .fa-brands { font-size: 1.05em }
 .icons-all { grid-template-columns: repeat(10, minmax(0, 1fr)) }
@@ -435,6 +434,10 @@ h1.title {
  justify-self: center;
  isolation: isolate;
 }
+.icons-featured .fa-youtube,
+.icons-featured .fa-vimeo,
+.icons-featured .fa-facebook,
+.icons-featured .fa-dailymotion { overflow: hidden }
 .icons .fa-youtube { color: #F00 }
 .icons .fa-youtube::after {
  position: absolute;
@@ -468,6 +471,12 @@ h1.title {
  content: " ";
  border-radius: 2em;
  z-index: -1;
+}
+.icons-featured .fa-facebook::after {
+ top: 1px;
+ left: 5px;
+ height: 1.7rem;
+ width: 1.7rem;
 }
 .icons .fa-x-twitter {
  color: #FFF;
