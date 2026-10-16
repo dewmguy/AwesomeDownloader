@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20261012-queue-shadow" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20261016-process-log" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -40,6 +40,7 @@ var queueRowCounter = 0;
 var maxQueueRows = 20;
 var activeDownloadView = 'private';
 var downloadsLoaded = false;
+var outputHideTimer = null;
 
 refreshDownloads();
 $("#help,#player,#activeQueue").hide();
@@ -287,9 +288,9 @@ $('#queueRows').on('blur', '.queue-url', function() {
   if ($(this).val().trim() !== '') validateQueueUrl($(this));
 });
 
-$('#queueRows').on('click', '.url-status', function() {
+$('#queueRows').on('click', '.url-status, .verified-media', function() {
   var $input = $(this).closest('.url-field-shell').find('.queue-url');
-  if ($input.data('validationState') === 'valid') {
+  if ($input.data('sourceTitle') && $input.prop('readonly')) {
     resetUrlValidation($input);
     $input.prop('readonly', false).focus().select();
     updateQueueControls();
@@ -315,8 +316,8 @@ $('form').submit(function(event) {
           return;
         }
         if (!jobInProgress) activeJobs = {};
-        json.jobs.forEach(function(job, index) {
-          activeJobs[job.id] = $.extend({}, job, { label: describeUrl(items[index].url) });
+        json.jobs.forEach(function(job) {
+          activeJobs[job.id] = $.extend({}, job);
         });
         jobInProgress = true;
         renderActiveQueue();
@@ -335,6 +336,8 @@ function addQueueRow(url, mode) {
   var $url = $('<input type="url" class="queue-url" inputmode="url" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048" enterkeyhint="done" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL" aria-invalid="false">').val(url || '');
   var $fieldShell = $('<div class="url-field-shell validation-idle"></div>');
   var $validation = $('<button type="button" class="url-status idle" aria-label="URL not verified" title="Paste a link to verify it"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span class="url-status-label" aria-hidden="true">Waiting</span><span class="visually-hidden" aria-live="polite">URL not verified</span></button>');
+  var $verifiedMedia = $('<button type="button" class="verified-media" hidden></button>');
+  var $urlContent = $('<div class="queue-url-content"></div>').append($url, $verifiedMedia);
   var selectedMode = mode || 'base';
   var menuId = 'queueModeMenu' + queueRowCounter;
   var $mode = $('<input type="hidden" class="queue-mode">');
@@ -342,7 +345,7 @@ function addQueueRow(url, mode) {
   var $modeButton = $('<button type="button" class="queue-mode-button" aria-haspopup="listbox" aria-expanded="false"></button>').attr('aria-controls', menuId);
   var $modeMenu = $('<div class="queue-mode-menu" role="listbox" aria-label="Download method options"></div>').attr('id', menuId);
   var choices = [
-    ['base', 'Base'],
+    ['base', 'Original'],
     ['h264', 'H264'],
     ['gif', 'GIF'],
     ['mp3', 'MP3'],
@@ -367,7 +370,7 @@ function addQueueRow(url, mode) {
   );
   $modePicker.append($mode, $modeButton, $modeMenu);
   var $remove = $('<button type="button" class="remove-url" aria-label="Remove URL from queue" title="Remove from queue"><i class="fa-solid fa-trash-can" aria-hidden="true"></i></button>');
-  $fieldShell.append($validation, $url, $modePicker);
+  $fieldShell.append($validation, $urlContent, $modePicker);
   $row.append($fieldShell, $remove);
   $('#queueRows').append($row);
   updateQueueControls();
@@ -522,6 +525,60 @@ function validateUrlShape(value) {
   catch (error) { return { valid: false, message: 'Use a complete http:// or https:// URL.' }; }
 }
 
+function sourcePresentation(source, url) {
+  var normalized = String(source || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  var hostname = '';
+  try { hostname = new URL(url || '').hostname.toLowerCase(); }
+  catch (error) {}
+  var sources = [
+    ['youtube', 'fa-brands fa-youtube', 'YouTube'],
+    ['vimeo', 'fa-brands fa-vimeo', 'Vimeo'],
+    ['facebook', 'fa-brands fa-facebook', 'Facebook'],
+    ['twitter', 'fa-brands fa-x-twitter', 'X'],
+    ['instagram', 'fa-brands fa-instagram', 'Instagram'],
+    ['tiktok', 'fa-brands fa-tiktok', 'TikTok'],
+    ['dailymotion', 'fa-brands fa-dailymotion', 'Dailymotion'],
+    ['twitch', 'fa-brands fa-twitch', 'Twitch'],
+    ['reddit', 'fa-brands fa-reddit-alien', 'Reddit'],
+    ['soundcloud', 'fa-brands fa-soundcloud', 'SoundCloud'],
+    ['bluesky', 'fa-brands fa-bluesky', 'Bluesky'],
+    ['bandcamp', 'fa-brands fa-bandcamp', 'Bandcamp'],
+    ['bilibili', 'fa-brands fa-bilibili', 'Bilibili'],
+    ['flickr', 'fa-brands fa-flickr', 'Flickr'],
+    ['pinterest', 'fa-brands fa-pinterest', 'Pinterest'],
+    ['tumblr', 'fa-brands fa-tumblr', 'Tumblr'],
+    ['mixcloud', 'fa-brands fa-mixcloud', 'Mixcloud'],
+    ['vk', 'fa-brands fa-vk', 'VK'],
+    ['snapchat', 'fa-brands fa-snapchat', 'Snapchat'],
+    ['linkedin', 'fa-brands fa-linkedin', 'LinkedIn']
+  ];
+  for (var index = 0; index < sources.length; index++) {
+    if (normalized.indexOf(sources[index][0]) !== -1 || hostname.indexOf(sources[index][0]) !== -1) {
+      return { icon: sources[index][1], name: sources[index][2] };
+    }
+  }
+  return { icon: 'fa-solid fa-link', name: source && source !== 'media' ? source : 'Media' };
+}
+
+function renderVerifiedMedia($input) {
+  var $summary = $input.closest('.url-field-shell').find('.verified-media');
+  var title = $input.data('sourceTitle');
+  var source = sourcePresentation($input.data('source'), $input.val());
+  if (!title) {
+    $summary.prop('hidden', true).empty();
+    $input.show();
+    return;
+  }
+  $summary.empty().attr({
+    'aria-label': source.name + ': ' + title + '. Click to edit this URL.',
+    title: title
+  }).append(
+    $('<i aria-hidden="true"></i>').attr('class', source.icon),
+    $('<span class="verified-media-title"></span>').text(title)
+  ).prop('hidden', false);
+  $input.hide();
+}
+
 function setUrlValidation($input, state, message, options) {
   var icons = {
     idle: 'fa-solid fa-shield-halved',
@@ -555,10 +612,15 @@ function setUrlValidation($input, state, message, options) {
       $('<span class="url-status-label" aria-hidden="true"></span>').text(labels[state] || labels.idle),
       $('<span class="visually-hidden" aria-live="polite"></span>').text(accessibleMessage)
     );
+  if ($input.data('sourceTitle') && (state === 'valid' || keepReadonly)) renderVerifiedMedia($input);
+  else {
+    $shell.find('.verified-media').prop('hidden', true).empty();
+    $input.show();
+  }
 }
 
 function resetUrlValidation($input) {
-  $input.removeData('validatedUrl validationState validationPromise validationRequest validationMessage duplicateOutput');
+  $input.removeData('validatedUrl validationState validationPromise validationRequest validationMessage duplicateOutput sourceTitle source isPlaylist');
   setUrlValidation($input, 'idle', 'URL not verified');
 }
 
@@ -602,6 +664,14 @@ function validateQueueUrl($input) {
       catch (error) { json = { valid: false, message: 'The server returned an invalid validation response.' }; }
       var valid = json.status === 0 && json.valid === true;
       $input.data('validationState', valid ? 'valid' : 'invalid');
+      if (valid) {
+        $input.data({
+          sourceTitle: json.title || 'Untitled media',
+          source: json.source || 'media',
+          isPlaylist: json.isPlaylist === true
+        });
+      }
+      else $input.removeData('sourceTitle source isPlaylist');
       setUrlValidation($input, valid ? 'valid' : 'invalid', json.message || (valid ? 'Verified media link.' : 'This URL is not supported.'));
       updateQueueControls();
       deferred.resolve({ valid: valid, message: json.message });
@@ -628,11 +698,11 @@ function setQueueSubmitting(submitting, label) {
   var $submit = $('#downloadSubmit');
   if (submitting) {
     $submit.data('submitting', true).prop('disabled', true).find('.button-label').text(label || 'Validating…');
-    $('.queue-url,.queue-mode-button,.remove-url,#addUrl').prop('disabled', true);
+    $('.queue-url,.verified-media,.queue-mode-button,.remove-url,#addUrl').prop('disabled', true);
     return;
   }
   $submit.removeData('submitting');
-  $('.queue-url,.queue-mode-button,.remove-url,#addUrl').prop('disabled', false);
+  $('.queue-url,.verified-media,.queue-mode-button,.remove-url,#addUrl').prop('disabled', false);
   updateQueueControls();
 }
 
@@ -660,13 +730,22 @@ function updateQueueControls() {
   $('.queue-row').toggleClass('queue-row-single', !hasRemoveButtons);
 }
 
-function describeUrl(value) {
-  try {
-    var parsed = new URL(value);
-    var description = parsed.hostname.replace(/^www\./, '') + parsed.pathname;
-    return description.length > 46 ? description.slice(0, 43) + '…' : description;
+function modeDisplayName(mode) {
+  return {
+    base: 'Original',
+    h264: 'H264',
+    gif: 'GIF',
+    mp3: 'MP3',
+    transcribe: 'Transcribe'
+  }[mode] || 'Original';
+}
+
+function processTitle(job) {
+  if (job.state === 'complete' && job.outputNames && job.outputNames.length === 1) return job.outputNames[0];
+  if (job.state === 'complete' && job.outputNames && job.outputNames.length > 1) {
+    return (job.title || 'Playlist') + ' — ' + job.outputNames.length + ' files';
   }
-  catch (error) { return 'Queued URL'; }
+  return job.title || 'Untitled media';
 }
 
 function pollJobs() {
@@ -701,13 +780,36 @@ function ensureJobPolling() {
 
 function renderActiveQueue() {
   var $queue = $('#activeQueue').empty().show();
-  $queue.append('<h3>Active queue</h3>');
+  $queue.append('<h3>Process Log</h3>');
+  $queue.append($('<div class="process-log-head" aria-hidden="true"></div>').append(
+    $('<span></span>').text('Convert'),
+    $('<span></span>').text('Media'),
+    $('<span></span>').text('Status')
+  ));
   Object.keys(activeJobs).forEach(function(id) {
     var job = activeJobs[id];
-    var $item = $('<div class="queue-status"></div>').addClass('state-' + job.state);
-    $item.append($('<span class="queue-status-choice"></span>').text(job.mode.toUpperCase()));
-    $item.append($('<span class="queue-status-url"></span>').text(job.label));
-    $item.append($('<span class="queue-status-message"></span>').text(job.message));
+    var source = sourcePresentation(job.source, job.url);
+    var stateLabel = job.state === 'complete' ? 'Completed' : job.state === 'failed' ? 'Failed' : 'Active';
+    var safeState = String(job.state || 'unknown').replace(/[^a-z-]/g, '');
+    var $item = $('<div class="process-log-entry"></div>').addClass('state-' + safeState);
+    var $conversion = $('<div class="process-log-conversion"></div>').append(
+      $('<span class="process-log-mobile-label"></span>').text('Convert'),
+      $('<strong></strong>').text(modeDisplayName(job.mode))
+    );
+    var $media = $('<div class="process-log-media"></div>').append(
+      $('<span class="process-log-mobile-label"></span>').text('Media'),
+      $('<div class="process-log-title"></div>').append(
+        $('<i aria-hidden="true"></i>').attr('class', source.icon),
+        $('<span></span>').text(processTitle(job))
+      ),
+      $('<a class="process-log-url" target="_blank" rel="noopener noreferrer"></a>').attr({ href: job.url, title: job.url }).text(job.url)
+    );
+    var $state = $('<div class="process-log-state"></div>').append(
+      $('<span class="process-log-mobile-label"></span>').text('Status'),
+      $('<strong class="process-log-state-label"></strong>').text(stateLabel),
+      $('<span class="process-log-message"></span>').text(job.message)
+    );
+    $item.append($conversion, $media, $state);
     $queue.append($item);
   });
 }
@@ -761,7 +863,13 @@ function refreshDownloads(preferredView) {
 }
 
 function showOutput(message, className) {
-  $('#output').removeClass('error success').text(message).addClass(className);
+  if (outputHideTimer !== null) clearTimeout(outputHideTimer);
+  var $output = $('#output');
+  $output.stop(true, true).removeClass('error success').text(message).addClass(className).show();
+  outputHideTimer = setTimeout(function() {
+    $output.fadeOut(250);
+    outputHideTimer = null;
+  }, 10000);
 }
 
 });
@@ -782,7 +890,7 @@ function showOutput(message, className) {
 </ol>
 <h2>Download Methods</h2>
 <ul class="dots">
-<li><span class="head">Base:</span> Keep the original media format.</li>
+<li><span class="head">Original:</span> Keep the original media format.</li>
 <li><span class="head">H264:</span> Create a broadly compatible video, up to 120 minutes.</li>
 <li><span class="head">GIF:</span> Create a silent GIF, up to 10 minutes.</li>
 <li><span class="head">MP3:</span> Extract the audio.</li>

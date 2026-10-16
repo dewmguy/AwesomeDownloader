@@ -71,15 +71,18 @@ check(in_array('--playlist-end', $validationCommand, true) && in_array('1', $val
 check(end($validationCommand) === 'https://www.youtube.com/watch?v=test', 'Validation URL is not passed as one final argv value.');
 
 $videoMetadata = parseYtDlpValidationOutput(json_encode([
-  'id' => 'test', 'extractor_key' => 'Youtube', 'formats' => [['format_id' => '18']]
+  'id' => 'test', 'title' => 'A verified video', 'extractor_key' => 'Youtube', 'formats' => [['format_id' => '18']]
 ]));
 check(($videoMetadata['extractor'] ?? '') === 'Youtube', 'Valid yt-dlp video metadata was rejected.');
+check(($videoMetadata['sourceTitle'] ?? '') === 'A verified video' && empty($videoMetadata['isPlaylist']), 'Video title metadata was not retained.');
 check(formatExtractorName('YoutubeTab') === 'YouTube', 'YouTube extractor labels are not formatted for users.');
 $playlistMetadata = parseYtDlpValidationOutput(json_encode([
-  '_type' => 'playlist', 'id' => 'playlist', 'extractor_key' => 'YoutubeTab', 'entries' => [['id' => 'one']]
+  '_type' => 'playlist', 'id' => 'playlist', 'title' => 'A verified playlist', 'extractor_key' => 'YoutubeTab', 'entries' => [['id' => 'one']]
 ]));
 check(($playlistMetadata['extractor'] ?? '') === 'YoutubeTab', 'Valid yt-dlp playlist metadata was rejected.');
+check(($playlistMetadata['sourceTitle'] ?? '') === 'A verified playlist' && !empty($playlistMetadata['isPlaylist']), 'Playlist metadata was not identified.');
 check(parseYtDlpValidationOutput('{"id":"empty","formats":[]}') === null, 'Metadata without downloadable media was accepted.');
+check(normalizedOutputTitle('<b>A public / 100% video</b>') === 'A public 100% video', 'Metadata titles are not normalized to their saved filename.');
 
 $runnerTimeout = null;
 $supported = validateMediaUrl(
@@ -112,7 +115,7 @@ check($redditSupported['valid'] && ($redditSupported['extractor'] ?? '') === 'Re
 check($redditFetchUrl === redditEmbedUrl($redditUrl), 'The Reddit fallback fetched an unexpected endpoint.');
 check($redditValidationUrl === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit fallback did not validate the resolved media playlist.');
 check(($redditSupported['downloadUrl'] ?? '') === $redditValidationUrl, 'The validated Reddit media URL was not retained for processing.');
-check(($redditSupported['sourceTitle'] ?? '') === 'A public / 100% video', 'The validated Reddit title was not retained for processing.');
+check(($redditSupported['sourceTitle'] ?? '') === 'A public 100% video', 'The validated Reddit title was not normalized to its saved filename.');
 $redditNoVideo = resolveRedditVideo(
   $redditUrl,
   fn($host) => ['8.8.8.8'],
@@ -176,6 +179,20 @@ $redditCommand = buildYtDlpCommand('https://v.redd.it/media123/HLSPlaylist.m3u8'
 $outputIndex = array_search('-o', $redditCommand, true);
 $redditOutputTemplate = $outputIndex === false ? '' : ($redditCommand[$outputIndex + 1] ?? '');
 check($redditOutputTemplate === 'A public 100%% video.%(ext)s', 'The resolved Reddit title was not converted into a safe output template.');
+
+$clientJob = formatJobForClient([
+  'id' => str_repeat('b', 24),
+  'url' => 'https://www.youtube.com/watch?v=test',
+  'sourceTitle' => 'A verified video',
+  'extractor' => 'Youtube',
+  'mode' => 'base',
+  'state' => 'complete',
+  'message' => 'One file is ready to save.',
+  'outputCount' => 1,
+  'outputNames' => ['A verified video.mp4']
+]);
+check(($clientJob['url'] ?? '') === 'https://www.youtube.com/watch?v=test' && ($clientJob['title'] ?? '') === 'A verified video', 'Process-log media metadata is missing from job responses.');
+check(($clientJob['source'] ?? '') === 'Youtube' && ($clientJob['outputNames'][0] ?? '') === 'A verified video.mp4', 'Process-log source or completed filename is missing from job responses.');
 
 $processResult = executeCommand([PHP_BINARY, '-r', 'fwrite(STDOUT, "out"); fwrite(STDERR, "err");']);
 check($processResult['exitCode'] === 0, 'File-backed process execution failed.');
