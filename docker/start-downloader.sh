@@ -1,28 +1,25 @@
 #!/bin/sh
 set -eu
 
-for runtime_root in /var/www/html/temp /var/www/html/download; do
-  mkdir -p "$runtime_root"
-  chgrp www-data "$runtime_root"
-  chmod g+rwx "$runtime_root"
-done
+data_dir=${DOWNLOADER_DATA_DIR:-/data}
+temp_dir=${DOWNLOADER_TEMP_DIR:-$data_dir/temp}
+final_dir=${DOWNLOADER_FINAL_DIR:-$data_dir/downloads}
+database_path=${DOWNLOADER_DATABASE_PATH:-$data_dir/app.sqlite}
 
 for runtime_dir in \
-  /var/www/html/temp/jobs \
-  /var/www/html/temp/work \
-  /var/www/html/temp/files \
-  /var/www/html/temp/url-validation; do
+  "$data_dir" \
+  "$temp_dir" \
+  "$temp_dir/work" \
+  "$final_dir" \
+  "$data_dir/locks" \
+  "$data_dir/locks/url-validation"; do
   mkdir -p "$runtime_dir"
   chown www-data:www-data "$runtime_dir"
   chmod 0775 "$runtime_dir"
 done
 
-cleanup_loop() {
-  while true; do
-    php /var/www/html/system/ajax.php cleanup >/dev/null 2>&1 || true
-    sleep "${DOWNLOADER_CLEANUP_INTERVAL_SECONDS:-900}"
-  done
-}
+touch "$database_path"
+chown www-data:www-data "$database_path"
+chmod 0660 "$database_path"
 
-cleanup_loop &
-exec apache2-foreground
+exec python3 /usr/local/bin/process-supervisor

@@ -10,7 +10,10 @@ function checkFrontend($condition, $message) {
 $html = file_get_contents(__DIR__ . '/../app/index.html');
 $css = file_get_contents(__DIR__ . '/../app/system/style.css');
 $dockerfile = file_get_contents(__DIR__ . '/../Dockerfile');
+$compose = file_get_contents(__DIR__ . '/../compose.yaml');
 $entrypoint = file_get_contents(__DIR__ . '/../docker/start-downloader.sh');
+$supervisor = file_get_contents(__DIR__ . '/../docker/process-supervisor.py');
+$cleanupLoop = file_get_contents(__DIR__ . '/../docker/cleanup-loop.sh');
 
 checkFrontend(str_contains($html, '<script src="https://kit.fontawesome.com/666b0b7246.js" crossorigin="anonymous"></script>'), 'The required Font Awesome kit is missing.');
 checkFrontend((bool)preg_match('/<h1 class="title">Awesome Media Downloader<\/h1>/', $html), 'The site title is not an h1.');
@@ -86,9 +89,15 @@ checkFrontend(str_contains($html, 'private to this browser and permanently remov
 checkFrontend(str_contains($html, 'aria-label="Don\'t click the smiley face... when you\'re not looking at him, he\'s looking at you!"'), 'The complete Cthulhu warning is not accessible.');
 checkFrontend(str_contains($html, 'class="eldritch-low"') && str_contains($html, 'class="eldritch-mid"') && str_contains($html, 'class="eldritch-high"'), 'The Cthulhu warning does not increase in intensity.');
 
-checkFrontend(str_contains($dockerfile, '<Directory "/var/www/html/download">') && str_contains($dockerfile, '<Directory "/var/www/html/temp">'), 'Runtime storage is not blocked from direct Apache access.');
-checkFrontend(str_contains($dockerfile, 'CMD ["start-downloader"]'), 'The cleanup-enabled container command is missing.');
-checkFrontend(str_contains($entrypoint, 'php /var/www/html/system/ajax.php cleanup') && str_contains($entrypoint, 'DOWNLOADER_CLEANUP_INTERVAL_SECONDS:-900'), 'The periodic retention cleanup is missing.');
-checkFrontend(str_contains($entrypoint, 'chown www-data:www-data "$runtime_dir"') && str_contains($entrypoint, '/var/www/html/temp/files'), 'Runtime metadata directories are not prepared for the Apache worker.');
+checkFrontend(str_contains($dockerfile, '<Directory "/data">') && str_contains($dockerfile, 'VOLUME ["/data"]'), 'The private data volume is not declared and protected.');
+checkFrontend(str_contains($dockerfile, 'COPY --from=pot-provider') && str_contains($dockerfile, 'transcriber/server.py /opt/transcriber/server.py'), 'The token provider and transcriber are not included in the application image.');
+checkFrontend(str_contains($dockerfile, 'new PDO("sqlite::memory:")'), 'The image does not verify SQLite support while building.');
+checkFrontend(str_contains($dockerfile, 'CMD ["start-downloader"]'), 'The supervised container command is missing.');
+checkFrontend(str_contains($entrypoint, 'DOWNLOADER_DATA_DIR:-/data') && str_contains($entrypoint, 'app.sqlite'), 'The named-volume data layout is not initialized.');
+checkFrontend(str_contains($supervisor, '"token provider"') && str_contains($supervisor, '"transcriber"') && str_contains($supervisor, '"Apache"'), 'The required processes are not supervised together.');
+checkFrontend(str_contains($cleanupLoop, 'php /var/www/html/system/ajax.php cleanup') && str_contains($cleanupLoop, 'DOWNLOADER_CLEANUP_INTERVAL_SECONDS:-900'), 'The periodic retention cleanup is missing.');
+checkFrontend(str_contains($compose, 'downloader-data:/data') && str_contains($compose, "\nvolumes:\n  downloader-data:"), 'Compose does not use one Docker-managed data volume.');
+checkFrontend(!str_contains($compose, './app:') && !str_contains($compose, './temp:') && !str_contains($compose, './download:'), 'Compose still depends on host-path bind mounts.');
+checkFrontend(substr_count($compose, "\n  downloader:") === 1 && !str_contains($compose, 'downloader-transcriber:') && !str_contains($compose, 'downloader-pot-provider:'), 'Compose still defines multiple application services.');
 
 echo "Frontend tests passed.\n";

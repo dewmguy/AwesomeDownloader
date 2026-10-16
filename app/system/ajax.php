@@ -4,15 +4,15 @@ ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 error_reporting(E_ALL);
 
-define('TEMP_DIR', getenv('DOWNLOADER_TEMP_DIR') ?: '/var/www/html/temp');
-define('FINAL_DIR', getenv('DOWNLOADER_FINAL_DIR') ?: '/var/www/html/download');
-define('JOB_DIR', TEMP_DIR . '/jobs');
+define('DATA_DIR', rtrim(getenv('DOWNLOADER_DATA_DIR') ?: '/data', '/'));
+define('TEMP_DIR', rtrim(getenv('DOWNLOADER_TEMP_DIR') ?: DATA_DIR . '/temp', '/'));
+define('FINAL_DIR', rtrim(getenv('DOWNLOADER_FINAL_DIR') ?: DATA_DIR . '/downloads', '/'));
+define('DATABASE_PATH', getenv('DOWNLOADER_DATABASE_PATH') ?: DATA_DIR . '/app.sqlite');
 define('WORK_DIR', TEMP_DIR . '/work');
-define('FILE_METADATA_DIR', TEMP_DIR . '/files');
-define('QUEUE_LOCK', TEMP_DIR . '/queue.lock');
-define('URL_VALIDATION_CACHE_DIR', TEMP_DIR . '/url-validation');
-define('URL_VALIDATION_LOCK', TEMP_DIR . '/url-validation.lock');
-define('CLEANUP_LOCK', TEMP_DIR . '/cleanup.lock');
+define('LOCK_DIR', DATA_DIR . '/locks');
+define('QUEUE_LOCK', LOCK_DIR . '/queue.lock');
+define('URL_VALIDATION_LOCK_DIR', LOCK_DIR . '/url-validation');
+define('CLEANUP_LOCK', LOCK_DIR . '/cleanup.lock');
 define('GIF_MAX_SECONDS', (int)(getenv('DOWNLOADER_GIF_MAX_SECONDS') ?: 600));
 define('REENCODE_MAX_SECONDS', (int)(getenv('DOWNLOADER_REENCODE_MAX_SECONDS') ?: 7200));
 define('MAX_BATCH_ITEMS', (int)(getenv('DOWNLOADER_MAX_BATCH_ITEMS') ?: 20));
@@ -20,9 +20,11 @@ define('PLAYLIST_MAX_ITEMS', (int)(getenv('DOWNLOADER_PLAYLIST_MAX_ITEMS') ?: 50
 define('URL_MAX_LENGTH', 2048);
 define('URL_VALIDATION_TIMEOUT', max(5, (int)(getenv('DOWNLOADER_URL_VALIDATION_TIMEOUT') ?: 25)));
 define('URL_VALIDATION_CACHE_SECONDS', max(30, (int)(getenv('DOWNLOADER_URL_VALIDATION_CACHE_SECONDS') ?: 600)));
-define('URL_VALIDATION_CACHE_VERSION', 2);
-define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://downloader-transcriber:8000', '/'));
-define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: '/work', '/'));
+define('URL_VALIDATION_CONCURRENCY', max(1, (int)(getenv('DOWNLOADER_URL_VALIDATION_CONCURRENCY') ?: 3)));
+define('URL_VALIDATION_LOCK_PARTITIONS', 256);
+define('URL_VALIDATION_CACHE_VERSION', 3);
+define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://127.0.0.1:8000', '/'));
+define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: TEMP_DIR, '/'));
 define('TRANSCRIPTION_TIMEOUT', (int)(getenv('DOWNLOADER_TRANSCRIPTION_TIMEOUT') ?: 14400));
 define('CONTENT_RETENTION_SECONDS', 72 * 60 * 60);
 define('VISITOR_COOKIE_NAME', 'awesome_downloader_visitor');
@@ -72,30 +74,98 @@ function getCurrentVisitorId($refreshCookie = false) {
   return visitorIdForToken(getVisitorToken($refreshCookie));
 }
 
-function getFileMetadataPath($fileId) {
-  if (!preg_match('/^[a-f0-9]{24}$/', (string)$fileId)) return null;
-  return FILE_METADATA_DIR . DIRECTORY_SEPARATOR . $fileId . '.json';
+function isValidRecordId($id) {
+  return is_string($id) && (bool)preg_match('/^[a-f0-9]{24}$/', $id);
+}
+
+function database() {
+  static $connection = null;
+  if ($connection instanceof PDO) return $connection;
+
+  $databaseDirectory = dirname(DATABASE_PATH);
+  if (!is_dir($databaseDirectory) && !@mkdir($databaseDirectory, 0775, true) && !is_dir($databaseDirectory)) {
+    throw new RuntimeException('The database directory could not be created.');
+  }
+
+  $connection = new PDO('sqlite:' . DATABASE_PATH, null, null, [
+    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    PDO::ATTR_EMULATE_PREPARES => false
+  ]);
+  $connection->exec('PRAGMA busy_timeout = 5000');
+  $connection->exec('PRAGMA journal_mode = WAL');
+  $connection->exec('PRAGMA synchronous = NORMAL');
+  $connection->exec('PRAGMA foreign_keys = ON');
+  $connection->exec(
+    'CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      updated_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS jobs_state_created_idx ON jobs (state, created_at, id);
+    CREATE INDEX IF NOT EXISTS jobs_updated_idx ON jobs (updated_at);
+    CREATE TABLE IF NOT EXISTS files (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT,
+      is_public INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      published_at INTEGER,
+      expires_at INTEGER NOT NULL,
+      storage_name TEXT NOT NULL UNIQUE,
+      record_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS files_expires_idx ON files (expires_at);
+    CREATE INDEX IF NOT EXISTS files_visibility_idx ON files (is_public, owner_id, expires_at);
+    CREATE TABLE IF NOT EXISTS validation_cache (
+      cache_key TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      result_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS validation_cache_created_idx ON validation_cache (created_at);'
+  );
+  $connection->exec('PRAGMA user_version = 1');
+  return $connection;
 }
 
 function readFileMetadata($fileId) {
-  $path = getFileMetadataPath($fileId);
-  if ($path === null || !is_file($path)) return null;
-  $record = json_decode((string)file_get_contents($path), true);
+  if (!isValidRecordId($fileId)) return null;
+  $statement = database()->prepare('SELECT record_json FROM files WHERE id = :id');
+  $statement->execute([':id' => $fileId]);
+  $record = json_decode((string)$statement->fetchColumn(), true);
   return is_array($record) && ($record['id'] ?? null) === $fileId ? $record : null;
 }
 
 function writeFileMetadata($record) {
-  $path = getFileMetadataPath($record['id'] ?? null);
-  if ($path === null) return false;
-  if (!is_dir(FILE_METADATA_DIR) && !@mkdir(FILE_METADATA_DIR, 0775, true) && !is_dir(FILE_METADATA_DIR)) return false;
-  $temporaryPath = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
-  if (file_put_contents($temporaryPath, json_encode($record, JSON_PRETTY_PRINT), LOCK_EX) === false) {
-    @unlink($temporaryPath);
-    return false;
-  }
-  if (rename($temporaryPath, $path)) return true;
-  @unlink($temporaryPath);
-  return false;
+  if (!isValidRecordId($record['id'] ?? null)) return false;
+  $storageName = basename((string)($record['storageName'] ?? ''));
+  if (!preg_match('/^[a-f0-9]{24}\.[a-z0-9]{2,5}$/', $storageName)) return false;
+  $json = json_encode($record, JSON_UNESCAPED_SLASHES);
+  if ($json === false) return false;
+  $statement = database()->prepare(
+    'INSERT INTO files (id, owner_id, is_public, created_at, published_at, expires_at, storage_name, record_json)
+     VALUES (:id, :owner_id, :is_public, :created_at, :published_at, :expires_at, :storage_name, :record_json)
+     ON CONFLICT(id) DO UPDATE SET
+       owner_id = excluded.owner_id,
+       is_public = excluded.is_public,
+       created_at = excluded.created_at,
+       published_at = excluded.published_at,
+       expires_at = excluded.expires_at,
+       storage_name = excluded.storage_name,
+       record_json = excluded.record_json'
+  );
+  return $statement->execute([
+    ':id' => $record['id'],
+    ':owner_id' => $record['ownerId'] ?? null,
+    ':is_public' => empty($record['public']) ? 0 : 1,
+    ':created_at' => (int)($record['createdAt'] ?? time()),
+    ':published_at' => isset($record['publishedAt']) ? (int)$record['publishedAt'] : null,
+    ':expires_at' => (int)($record['expiresAt'] ?? 0),
+    ':storage_name' => $storageName,
+    ':record_json' => $json
+  ]);
 }
 
 function getRecordFilePath($record) {
@@ -106,8 +176,9 @@ function getRecordFilePath($record) {
 
 function listFileMetadata() {
   $records = [];
-  foreach (glob(FILE_METADATA_DIR . '/*.json') ?: [] as $path) {
-    $record = json_decode((string)file_get_contents($path), true);
+  $statement = database()->query('SELECT record_json FROM files ORDER BY created_at DESC, id');
+  foreach ($statement as $row) {
+    $record = json_decode((string)$row['record_json'], true);
     if (is_array($record) && isset($record['id'])) $records[] = $record;
   }
   return $records;
@@ -193,8 +264,8 @@ function deleteOwnedFile($fileId, $ownerId) {
   if ($record === null || !empty($record['public']) || !hash_equals((string)($record['ownerId'] ?? ''), (string)$ownerId)) return false;
   $filePath = getRecordFilePath($record);
   if ($filePath !== null && is_file($filePath) && !unlink($filePath)) return false;
-  $metadataPath = getFileMetadataPath($fileId);
-  return $metadataPath !== null && (!is_file($metadataPath) || unlink($metadataPath));
+  $statement = database()->prepare('DELETE FROM files WHERE id = :id');
+  return $statement->execute([':id' => $fileId]) && $statement->rowCount() === 1;
 }
 
 function publishOwnedFile($fileId, $ownerId, $now = null) {
@@ -406,26 +477,97 @@ function queueUrlIdentity($url) {
   return $scheme . '://' . $host . $port . $path . $query . $fragment;
 }
 
-function urlValidationCachePath($url) {
-  return URL_VALIDATION_CACHE_DIR . DIRECTORY_SEPARATOR . hash('sha256', $url) . '.json';
-}
-
 function readUrlValidationCache($url) {
-  $path = urlValidationCachePath($url);
-  if (!is_file($path)) return null;
-  $result = json_decode((string)file_get_contents($path), true);
-  if (!is_array($result) || ($result['cacheVersion'] ?? 0) !== URL_VALIDATION_CACHE_VERSION || !isset($result['valid'], $result['message'])) return null;
-  $cacheSeconds = $result['valid'] ? URL_VALIDATION_CACHE_SECONDS : min(60, URL_VALIDATION_CACHE_SECONDS);
-  return filemtime($path) < time() - $cacheSeconds ? null : $result;
+  $statement = database()->prepare(
+    'SELECT result_json FROM validation_cache WHERE cache_key = :cache_key AND created_at >= :cutoff'
+  );
+  $statement->execute([
+    ':cache_key' => hash('sha256', $url),
+    ':cutoff' => time() - URL_VALIDATION_CACHE_SECONDS
+  ]);
+  $result = json_decode((string)$statement->fetchColumn(), true);
+  if (!is_array($result) || ($result['cacheVersion'] ?? 0) !== URL_VALIDATION_CACHE_VERSION || empty($result['valid']) || !isset($result['message'])) return null;
+  return $result;
 }
 
 function writeUrlValidationCache($url, $result) {
-  if (!is_dir(URL_VALIDATION_CACHE_DIR) && !@mkdir(URL_VALIDATION_CACHE_DIR, 0775, true) && !is_dir(URL_VALIDATION_CACHE_DIR)) return;
-  $path = urlValidationCachePath($url);
-  $temporaryPath = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
+  if (empty($result['valid'])) return;
   $result['cacheVersion'] = URL_VALIDATION_CACHE_VERSION;
-  if (file_put_contents($temporaryPath, json_encode($result), LOCK_EX) !== false) rename($temporaryPath, $path);
-  else @unlink($temporaryPath);
+  $json = json_encode($result, JSON_UNESCAPED_SLASHES);
+  if ($json === false) return;
+  $statement = database()->prepare(
+    'INSERT INTO validation_cache (cache_key, created_at, result_json)
+     VALUES (:cache_key, :created_at, :result_json)
+     ON CONFLICT(cache_key) DO UPDATE SET created_at = excluded.created_at, result_json = excluded.result_json'
+  );
+  $statement->execute([
+    ':cache_key' => hash('sha256', $url),
+    ':created_at' => time(),
+    ':result_json' => $json
+  ]);
+}
+
+function acquireValidationLock($path) {
+  $handle = @fopen($path, 'c');
+  if ($handle !== false && flock($handle, LOCK_EX | LOCK_NB)) return $handle;
+  if (is_resource($handle)) fclose($handle);
+  return null;
+}
+
+function releaseValidationLock($handle) {
+  if (!is_resource($handle)) return;
+  flock($handle, LOCK_UN);
+  fclose($handle);
+}
+
+function acquireUrlValidationLock($url) {
+  $partition = hexdec(substr(hash('sha256', $url), 0, 8)) % URL_VALIDATION_LOCK_PARTITIONS;
+  return acquireValidationLock(URL_VALIDATION_LOCK_DIR . DIRECTORY_SEPARATOR . 'url-' . $partition . '.lock');
+}
+
+function acquireUrlValidationSlot() {
+  for ($slot = 0; $slot < URL_VALIDATION_CONCURRENCY; $slot++) {
+    $handle = acquireValidationLock(URL_VALIDATION_LOCK_DIR . DIRECTORY_SEPARATOR . 'slot-' . $slot . '.lock');
+    if ($handle !== null) return $handle;
+  }
+  return null;
+}
+
+function validationFailureResult($execution) {
+  if (!empty($execution['timedOut'])) {
+    return invalidUrlResult('The media site took too long to validate. Try again.');
+  }
+
+  $error = strtolower((string)($execution['stderr'] ?? ''));
+  foreach (['private video', 'login required', 'authentication is required', 'sign in to confirm', 'age-restricted'] as $privateMarker) {
+    if (str_contains($error, $privateMarker)) {
+      return invalidUrlResult('This media is not publicly accessible without signing in.');
+    }
+  }
+  foreach (['http error 403', 'forbidden', 'http error 429', 'too many requests', 'rate limit', 'unable to connect', 'proxyerror', 'proxy error', 'timed out', 'timeout', 'connection reset', 'remote end closed', 'network is unreachable', 'temporary failure'] as $transientMarker) {
+    if (str_contains($error, $transientMarker)) {
+      return invalidUrlResult('The media site could not be reached reliably. Try again in a moment.');
+    }
+  }
+  if (str_contains($error, 'unsupported url')) {
+    return invalidUrlResult('This link does not contain media this downloader can process.');
+  }
+  return invalidUrlResult('This link could not be validated right now. Try again.');
+}
+
+function sanitizedValidationError($error) {
+  $sanitized = preg_replace('~https?://\S+~i', '[url]', (string)$error);
+  $sanitized = preg_replace('/\s+/', ' ', trim((string)$sanitized));
+  return $sanitized === '' ? 'no extractor detail' : tailText($sanitized, 1000);
+}
+
+function logValidationFailure($url, $execution, $elapsedSeconds) {
+  $host = (string)(parse_url($url, PHP_URL_HOST) ?: 'unknown');
+  $exitCode = (int)($execution['exitCode'] ?? 1);
+  $timedOut = !empty($execution['timedOut']) ? 'yes' : 'no';
+  $durationMs = max(0, (int)round($elapsedSeconds * 1000));
+  $detail = sanitizedValidationError($execution['stderr'] ?? '');
+  error_log("Media URL validation failed host=$host exit=$exitCode timedOut=$timedOut durationMs=$durationMs detail=$detail");
 }
 
 function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = true) {
@@ -439,48 +581,55 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
     if ($cached !== null) return $cached;
   }
 
-  $lockHandle = @fopen(URL_VALIDATION_LOCK, 'c');
-  if ($lockHandle === false || !flock($lockHandle, LOCK_EX | LOCK_NB)) {
-    if (is_resource($lockHandle)) fclose($lockHandle);
-    return invalidUrlResult('The URL checker is busy. Try again in a moment.');
+  $urlLock = acquireUrlValidationLock($url);
+  if ($urlLock === null) {
+    return invalidUrlResult('This URL is already being checked. Try again in a moment.');
   }
 
   if ($useCache) {
     $cached = readUrlValidationCache($url);
     if ($cached !== null) {
-      flock($lockHandle, LOCK_UN);
-      fclose($lockHandle);
+      releaseValidationLock($urlLock);
       return $cached;
     }
   }
 
-  $command = buildYtDlpValidationCommand($url);
-  $execution = $runner === null
-    ? executeCommand($command, URL_VALIDATION_TIMEOUT)
-    : $runner($command, URL_VALIDATION_TIMEOUT);
-  $metadata = ($execution['exitCode'] ?? 1) === 0
-    ? parseYtDlpValidationOutput($execution['stdout'] ?? '')
-    : null;
-
-  if (!empty($execution['timedOut'])) {
-    $result = invalidUrlResult('The media site took too long to validate. Try again.');
-  }
-  elseif ($metadata === null) {
-    $result = invalidUrlResult('This link does not contain media this downloader can process.');
-  }
-  else {
-    $extractorName = formatExtractorName($metadata['extractor']);
-    $result = [
-      'valid' => true,
-      'message' => $extractorName === 'this media service' ? 'Verified media link.' : 'Verified ' . $extractorName . ' link.',
-      'extractor' => $metadata['extractor']
-    ];
+  $slotLock = acquireUrlValidationSlot();
+  if ($slotLock === null) {
+    releaseValidationLock($urlLock);
+    return invalidUrlResult('The URL checker is busy. Try again in a moment.');
   }
 
-  if ($useCache) writeUrlValidationCache($url, $result);
-  flock($lockHandle, LOCK_UN);
-  fclose($lockHandle);
-  return $result;
+  try {
+    $command = buildYtDlpValidationCommand($url);
+    $startedAt = microtime(true);
+    $execution = $runner === null
+      ? executeCommand($command, URL_VALIDATION_TIMEOUT)
+      : $runner($command, URL_VALIDATION_TIMEOUT);
+    $metadata = ($execution['exitCode'] ?? 1) === 0
+      ? parseYtDlpValidationOutput($execution['stdout'] ?? '')
+      : null;
+
+    if ($metadata === null) {
+      if ($runner === null) logValidationFailure($url, $execution, microtime(true) - $startedAt);
+      $result = validationFailureResult($execution);
+    }
+    else {
+      $extractorName = formatExtractorName($metadata['extractor']);
+      $result = [
+        'valid' => true,
+        'message' => $extractorName === 'this media service' ? 'Verified media link.' : 'Verified ' . $extractorName . ' link.',
+        'extractor' => $metadata['extractor']
+      ];
+    }
+
+    if ($useCache) writeUrlValidationCache($url, $result);
+    return $result;
+  }
+  finally {
+    releaseValidationLock($slotLock);
+    releaseValidationLock($urlLock);
+  }
 }
 
 function normalizeQueueItems($rawItems) {
@@ -579,31 +728,52 @@ function createJobId() { return bin2hex(random_bytes(12)); }
 
 function ensureRuntimeDirs() {
   $ready = true;
-  foreach ([TEMP_DIR, FINAL_DIR, JOB_DIR, WORK_DIR, FILE_METADATA_DIR, URL_VALIDATION_CACHE_DIR] as $dir) {
+  foreach ([DATA_DIR, TEMP_DIR, FINAL_DIR, WORK_DIR, LOCK_DIR, URL_VALIDATION_LOCK_DIR] as $dir) {
     if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) $ready = false;
+  }
+  if ($ready) {
+    try {
+      database();
+    }
+    catch (Throwable $error) {
+      error_log('Runtime database initialization failed: ' . $error->getMessage());
+      $ready = false;
+    }
   }
   return $ready;
 }
 
-function getJobPath($jobId) {
-  if (!preg_match('/^[a-f0-9]{24}$/', $jobId)) return null;
-  return JOB_DIR . DIRECTORY_SEPARATOR . $jobId . '.json';
-}
-
 function readJob($jobId) {
-  $path = getJobPath($jobId);
-  if ($path === null || !is_file($path)) return null;
-  $job = json_decode(file_get_contents($path), true);
+  if (!isValidRecordId($jobId)) return null;
+  $statement = database()->prepare('SELECT record_json FROM jobs WHERE id = :id');
+  $statement->execute([':id' => $jobId]);
+  $job = json_decode((string)$statement->fetchColumn(), true);
   return is_array($job) ? $job : null;
 }
 
 function writeJob($jobId, $job) {
-  $path = getJobPath($jobId);
-  if ($path === null) return false;
+  if (!isValidRecordId($jobId) || ($job['id'] ?? null) !== $jobId) return false;
   $job['updatedAt'] = time();
-  $temporaryPath = $path . '.tmp';
-  if (file_put_contents($temporaryPath, json_encode($job, JSON_PRETTY_PRINT), LOCK_EX) === false) return false;
-  return rename($temporaryPath, $path);
+  $json = json_encode($job, JSON_UNESCAPED_SLASHES);
+  if ($json === false) return false;
+  $statement = database()->prepare(
+    'INSERT INTO jobs (id, owner_id, state, created_at, updated_at, record_json)
+     VALUES (:id, :owner_id, :state, :created_at, :updated_at, :record_json)
+     ON CONFLICT(id) DO UPDATE SET
+       owner_id = excluded.owner_id,
+       state = excluded.state,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at,
+       record_json = excluded.record_json'
+  );
+  return $statement->execute([
+    ':id' => $jobId,
+    ':owner_id' => (string)($job['ownerId'] ?? ''),
+    ':state' => (string)($job['state'] ?? 'unknown'),
+    ':created_at' => (float)($job['createdAt'] ?? microtime(true)),
+    ':updated_at' => (int)$job['updatedAt'],
+    ':record_json' => $json
+  ]);
 }
 
 function updateJob($jobId, $changes) {
@@ -666,13 +836,8 @@ function launchQueueWorker() {
 }
 
 function findQueuedJobIds() {
-  $jobs = [];
-  foreach (glob(JOB_DIR . '/*.json') ?: [] as $path) {
-    $job = json_decode(file_get_contents($path), true);
-    if (is_array($job) && ($job['state'] ?? '') === 'queued' && isset($job['id'])) $jobs[] = $job;
-  }
-  usort($jobs, fn($a, $b) => (($a['createdAt'] ?? 0) <=> ($b['createdAt'] ?? 0)) ?: strcmp($a['id'], $b['id']));
-  return array_column($jobs, 'id');
+  $statement = database()->query("SELECT id FROM jobs WHERE state = 'queued' ORDER BY created_at, id");
+  return $statement->fetchAll(PDO::FETCH_COLUMN);
 }
 
 function runQueue() {
@@ -1099,8 +1264,10 @@ function purgeExpiredContent($now = null) {
 
   $removed = ['files' => 0, 'jobs' => 0, 'cache' => 0, 'work' => 0];
   $knownStorageNames = [];
-  foreach (glob(FILE_METADATA_DIR . '/*.json') ?: [] as $metadataPath) {
-    $record = json_decode((string)file_get_contents($metadataPath), true);
+  $fileRows = database()->query('SELECT id, record_json FROM files')->fetchAll();
+  $deleteFileRecord = database()->prepare('DELETE FROM files WHERE id = :id');
+  foreach ($fileRows as $fileRow) {
+    $record = json_decode((string)$fileRow['record_json'], true);
     $filePath = is_array($record) ? getRecordFilePath($record) : null;
     $expired = !is_array($record) || (int)($record['expiresAt'] ?? 0) <= $now || $filePath === null;
     if (!$expired && is_file($filePath)) {
@@ -1108,7 +1275,8 @@ function purgeExpiredContent($now = null) {
       continue;
     }
     if ($filePath !== null && is_file($filePath)) @unlink($filePath);
-    if (@unlink($metadataPath)) $removed['files']++;
+    $deleteFileRecord->execute([':id' => $fileRow['id']]);
+    if ($deleteFileRecord->rowCount() === 1) $removed['files']++;
   }
 
   $cutoff = $now - CONTENT_RETENTION_SECONDS;
@@ -1116,14 +1284,12 @@ function purgeExpiredContent($now = null) {
     $path = FINAL_DIR . DIRECTORY_SEPARATOR . $file;
     if (is_file($path) && !isset($knownStorageNames[$file]) && filemtime($path) <= $cutoff && @unlink($path)) $removed['files']++;
   }
-  foreach (glob(JOB_DIR . '/*.json') ?: [] as $path) {
-    $job = json_decode((string)file_get_contents($path), true);
-    $timestamp = is_array($job) ? (int)($job['updatedAt'] ?? $job['createdAt'] ?? 0) : (int)filemtime($path);
-    if ($timestamp <= $cutoff && @unlink($path)) $removed['jobs']++;
-  }
-  foreach (glob(URL_VALIDATION_CACHE_DIR . '/*.json') ?: [] as $path) {
-    if (filemtime($path) <= $cutoff && @unlink($path)) $removed['cache']++;
-  }
+  $deleteJobs = database()->prepare('DELETE FROM jobs WHERE updated_at <= :cutoff');
+  $deleteJobs->execute([':cutoff' => $cutoff]);
+  $removed['jobs'] = $deleteJobs->rowCount();
+  $deleteCache = database()->prepare('DELETE FROM validation_cache WHERE created_at <= :cutoff');
+  $deleteCache->execute([':cutoff' => $cutoff]);
+  $removed['cache'] = $deleteCache->rowCount();
   foreach (glob(WORK_DIR . '/*', GLOB_ONLYDIR) ?: [] as $path) {
     if (filemtime($path) <= $cutoff) {
       cleanupWorkDir($path);
