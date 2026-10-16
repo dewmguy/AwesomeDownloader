@@ -1,8 +1,7 @@
 <?php
 
 $testRoot = sys_get_temp_dir() . '/awesome-downloader-tests-' . bin2hex(random_bytes(4));
-putenv("DOWNLOADER_TEMP_DIR=$testRoot/temp");
-putenv("DOWNLOADER_FINAL_DIR=$testRoot/download");
+putenv("DOWNLOADER_DATA_DIR=$testRoot/data");
 define('DOWNLOADER_LIBRARY_ONLY', true);
 require dirname(__DIR__) . '/app/system/ajax.php';
 
@@ -87,6 +86,36 @@ $cacheUrl = 'https://media.public-site.net/cached-video';
 validateMediaUrl($cacheUrl, fn($host) => ['8.8.8.8'], $cacheRunner, true);
 validateMediaUrl($cacheUrl, fn($host) => ['8.8.8.8'], $cacheRunner, true);
 check($cacheRuns === 1, 'Successful compatibility validation was not reused from cache.');
+$transientRuns = 0;
+$transientRunner = function($command, $timeout) use (&$transientRuns) {
+  $transientRuns++;
+  if ($transientRuns === 1) {
+    return ['exitCode' => 1, 'stdout' => '', 'stderr' => 'HTTP Error 429: Too Many Requests', 'timedOut' => false];
+  }
+  return ['exitCode' => 0, 'stdout' => '{"id":"retry","extractor_key":"Example","url":"https://cdn.public-site.net/retry.mp4"}', 'stderr' => '', 'timedOut' => false];
+};
+$transientUrl = 'https://media.public-site.net/transient-video';
+$transientFailure = validateMediaUrl($transientUrl, fn($host) => ['8.8.8.8'], $transientRunner, true);
+$transientRetry = validateMediaUrl($transientUrl, fn($host) => ['8.8.8.8'], $transientRunner, true);
+check(!$transientFailure['valid'] && str_contains($transientFailure['message'], 'reached reliably'), 'A transient validation failure was not identified for the user.');
+check($transientRetry['valid'] && $transientRuns === 2, 'A transient validation failure was cached instead of allowing an immediate retry.');
+check(sanitizedValidationError('failed at https://media.public-site.net/watch?token=secret with timeout') === 'failed at [url] with timeout', 'Validation logging did not remove a submitted URL.');
+$authenticationFailure = validationFailureResult(['exitCode' => 1, 'stderr' => 'Account authentication is required. Use --cookies for authentication.', 'timedOut' => false]);
+check(str_contains($authenticationFailure['message'], 'not publicly accessible'), 'An authentication-required media response was not explained to the user.');
+
+$firstUrlLock = acquireUrlValidationLock('https://media.public-site.net/lock-one');
+$duplicateUrlLock = acquireUrlValidationLock('https://media.public-site.net/lock-one');
+$secondUrlLock = acquireUrlValidationLock('https://media.public-site.net/lock-two');
+check(is_resource($firstUrlLock) && $duplicateUrlLock === null, 'Duplicate checks for one URL were not coalesced.');
+check(is_resource($secondUrlLock), 'An unrelated URL was blocked by another URL check.');
+releaseValidationLock($firstUrlLock);
+releaseValidationLock($secondUrlLock);
+
+$slotLocks = [];
+for ($slot = 0; $slot < URL_VALIDATION_CONCURRENCY; $slot++) $slotLocks[] = acquireUrlValidationSlot();
+$overflowSlot = acquireUrlValidationSlot();
+check(count(array_filter($slotLocks, 'is_resource')) === URL_VALIDATION_CONCURRENCY && $overflowSlot === null, 'The validation concurrency pool did not enforce its configured capacity.');
+foreach ($slotLocks as $slotLock) releaseValidationLock($slotLock);
 $unsupported = validateMediaUrl(
   'https://media.public-site.net/page',
   fn($host) => ['8.8.8.8'],
@@ -120,6 +149,9 @@ check(!isValidVisitorToken('short-or-unsafe'), 'An invalid anonymous visitor tok
 check(visitorIdForToken('visitor-a') !== visitorIdForToken('visitor-b'), 'Distinct visitor tokens produced the same owner identity.');
 
 ensureRuntimeDirs();
+check(is_file(DATABASE_PATH), 'The SQLite runtime database was not initialized.');
+$tables = database()->query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
+check(in_array('jobs', $tables, true) && in_array('files', $tables, true) && in_array('validation_cache', $tables, true), 'The SQLite schema is incomplete.');
 $now = time();
 $ownerA = hash('sha256', 'owner-a');
 $ownerB = hash('sha256', 'owner-b');
@@ -169,16 +201,31 @@ touch(FINAL_DIR . '/legacy-old.mp3', $now - CONTENT_RETENTION_SECONDS - 10);
 file_put_contents(FINAL_DIR . '/abandoned.part', 'partial media');
 touch(FINAL_DIR . '/abandoned.part', $now - CONTENT_RETENTION_SECONDS - 10);
 $oldJobId = str_repeat('a', 24);
-file_put_contents(getJobPath($oldJobId), json_encode(['id' => $oldJobId, 'ownerId' => $ownerA, 'state' => 'complete', 'updatedAt' => $now - CONTENT_RETENTION_SECONDS - 10]));
-touch(getJobPath($oldJobId), $now - CONTENT_RETENTION_SECONDS - 10);
-$oldCache = URL_VALIDATION_CACHE_DIR . '/old.json';
-file_put_contents($oldCache, '{}');
-touch($oldCache, $now - CONTENT_RETENTION_SECONDS - 10);
+$oldTimestamp = $now - CONTENT_RETENTION_SECONDS - 10;
+writeJob($oldJobId, [
+  'id' => $oldJobId,
+  'ownerId' => $ownerA,
+  'state' => 'complete',
+  'createdAt' => $oldTimestamp,
+  'updatedAt' => $oldTimestamp
+]);
+database()->prepare('UPDATE jobs SET updated_at = :updated_at WHERE id = :id')->execute([
+  ':updated_at' => $oldTimestamp,
+  ':id' => $oldJobId
+]);
+$oldCacheUrl = 'https://media.public-site.net/old-cache';
+writeUrlValidationCache($oldCacheUrl, ['valid' => true, 'message' => 'Verified media link.']);
+database()->prepare('UPDATE validation_cache SET created_at = :created_at WHERE cache_key = :cache_key')->execute([
+  ':created_at' => $oldTimestamp,
+  ':cache_key' => hash('sha256', $oldCacheUrl)
+]);
 $cleanup = purgeExpiredContent($now);
 check(readFileMetadata($expired['id']) === null && !is_file(FINAL_DIR . '/' . $expired['storageName']), 'Expired tracked output was not permanently removed.');
 check(!is_file(FINAL_DIR . '/legacy-old.mp3'), 'Expired legacy output was not permanently removed.');
 check(!is_file(FINAL_DIR . '/abandoned.part'), 'Expired partial output was not permanently removed.');
-check(!is_file(getJobPath($oldJobId)) && !is_file($oldCache), 'Expired job or validation metadata was not removed.');
+$oldJobCount = database()->query("SELECT count(*) FROM jobs WHERE id = '$oldJobId'")->fetchColumn();
+$oldCacheCount = database()->query("SELECT count(*) FROM validation_cache WHERE cache_key = '" . hash('sha256', $oldCacheUrl) . "'")->fetchColumn();
+check((int)$oldJobCount === 0 && (int)$oldCacheCount === 0, 'Expired job or validation metadata was not removed.');
 check(($cleanup['files'] ?? 0) >= 3 && ($cleanup['jobs'] ?? 0) >= 1 && ($cleanup['cache'] ?? 0) >= 1, 'Cleanup counters do not reflect expired data.');
 
 check(jobBelongsToOwner(['ownerId' => $ownerA], $ownerA), 'Owner job authorization failed.');

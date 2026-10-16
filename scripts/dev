@@ -1,0 +1,141 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+app_image=awesome-downloader:latest
+test_image=awesome-downloader-test:latest
+whisper_model=${WHISPER_MODEL:-small}
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/dev COMMAND
+
+Commands:
+  build    Build the complete production image.
+  up       Build, start, wait for health, and run smoke checks.
+  start    Start the existing image, wait for health, and run smoke checks.
+  test     Build the model-free test stage and run all repository tests.
+  smoke    Check the page, internal services, and SQLite data store.
+  status   Show Compose service status.
+  logs     Follow the container logs.
+  down     Stop and remove the container and network (data is retained).
+
+Environment:
+  WHISPER_MODEL     Whisper model baked into the image (default: small).
+  DOWNLOADER_PORT   Host HTTP port used by Compose (default: 8080).
+  EXTRA_CA_CERT     Optional path to an additional trusted PEM certificate.
+  START_TIMEOUT     Health wait timeout in seconds (default: 360).
+EOF
+}
+
+require_docker() {
+  command -v docker >/dev/null 2>&1 || {
+    echo "Docker is required." >&2
+    exit 1
+  }
+  docker compose version >/dev/null 2>&1 || {
+    echo "Docker Compose v2 is required." >&2
+    exit 1
+  }
+}
+
+configure_buildx() {
+  docker_config=${DOCKER_CONFIG:-${HOME:-/tmp}/.docker}
+  if [ -z "${BUILDX_CONFIG:-}" ] && [ ! -w "$docker_config" ]; then
+    BUILDX_CONFIG=${TMPDIR:-/tmp}/awesome-downloader-buildx
+    export BUILDX_CONFIG
+  fi
+  if [ -n "${BUILDX_CONFIG:-}" ]; then
+    mkdir -p "$BUILDX_CONFIG"
+  fi
+}
+
+extra_ca=${EXTRA_CA_CERT:-${CODEX_PROXY_CERT:-${NODE_EXTRA_CA_CERTS:-}}}
+
+docker_build() {
+  configure_buildx
+  if [ -n "$extra_ca" ]; then
+    if [ ! -r "$extra_ca" ]; then
+      echo "The configured extra CA certificate is not readable." >&2
+      exit 1
+    fi
+    docker build --secret "id=extra_ca,src=$extra_ca" "$@"
+  else
+    docker build "$@"
+  fi
+}
+
+build() {
+  docker_build \
+    --build-arg "WHISPER_MODEL=$whisper_model" \
+    -f Dockerfile \
+    -t "$app_image" \
+    .
+}
+
+start() {
+  docker compose up -d --no-build --wait --wait-timeout "${START_TIMEOUT:-360}"
+}
+
+test_all() {
+  docker_build --target test -f Dockerfile -t "$test_image" .
+
+  docker run --rm --network none \
+    -v "$repo_root:/workspace/AwesomeDownloader:ro" \
+    -w /workspace/AwesomeDownloader \
+    "$test_image" php tests/frontend_test.php
+  docker run --rm --network none \
+    -v "$repo_root:/workspace/AwesomeDownloader:ro" \
+    -w /workspace/AwesomeDownloader \
+    "$test_image" php tests/backend_test.php
+  docker run --rm --network none \
+    -v "$repo_root:/workspace/AwesomeDownloader:ro" \
+    -w /workspace/AwesomeDownloader \
+    "$test_image" python -m unittest -v tests/test_transcriber.py
+}
+
+smoke() {
+  page=$(docker compose exec -T downloader curl -fsS http://127.0.0.1/)
+  case "$page" in
+    *'<title>Awesome Media Downloader</title>'*) ;;
+    *)
+      echo "The app responded, but the expected page title was missing." >&2
+      exit 1
+      ;;
+  esac
+
+  docker compose exec -T downloader curl -fsS http://127.0.0.1:4416/ping >/dev/null
+  docker compose exec -T downloader curl -fsS http://127.0.0.1:8000/health >/dev/null
+  docker compose exec -T downloader test -f /data/app.sqlite
+  docker compose exec -T downloader php -r \
+    '$db = new PDO("sqlite:/data/app.sqlite"); $count = $db->query("SELECT count(*) FROM sqlite_master WHERE type=\"table\" AND name IN (\"jobs\",\"files\",\"validation_cache\")")->fetchColumn(); exit((int)$count === 3 ? 0 : 1);'
+
+  echo "Smoke checks passed (web app, token provider, local Whisper, and SQLite)."
+}
+
+require_docker
+
+case "${1:-}" in
+  build) build ;;
+  up)
+    build
+    start
+    smoke
+    ;;
+  start)
+    start
+    smoke
+    ;;
+  test) test_all ;;
+  smoke) smoke ;;
+  status) docker compose ps ;;
+  logs) docker compose logs -f ;;
+  down) docker compose down ;;
+  -h|--help|help) usage ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
