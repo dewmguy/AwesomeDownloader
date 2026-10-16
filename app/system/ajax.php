@@ -22,7 +22,7 @@ define('URL_VALIDATION_TIMEOUT', max(5, (int)(getenv('DOWNLOADER_URL_VALIDATION_
 define('URL_VALIDATION_CACHE_SECONDS', max(30, (int)(getenv('DOWNLOADER_URL_VALIDATION_CACHE_SECONDS') ?: 600)));
 define('URL_VALIDATION_CONCURRENCY', max(1, (int)(getenv('DOWNLOADER_URL_VALIDATION_CONCURRENCY') ?: 3)));
 define('URL_VALIDATION_LOCK_PARTITIONS', 256);
-define('URL_VALIDATION_CACHE_VERSION', 4);
+define('URL_VALIDATION_CACHE_VERSION', 5);
 define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://127.0.0.1:8000', '/'));
 define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: TEMP_DIR, '/'));
 define('TRANSCRIPTION_TIMEOUT', (int)(getenv('DOWNLOADER_TRANSCRIPTION_TIMEOUT') ?: 14400));
@@ -514,7 +514,13 @@ function parseYtDlpValidationOutput($output) {
 
   $extractor = trim((string)($metadata['extractor_key'] ?? $metadata['extractor'] ?? 'media'));
   if (!preg_match('/^[a-z0-9 _.-]{1,80}$/i', $extractor)) $extractor = 'media';
-  return ['extractor' => $extractor];
+  $title = normalizedOutputTitle($metadata['title'] ?? $metadata['fulltitle'] ?? $metadata['playlist_title'] ?? $metadata['id']);
+  if ($title === null) $title = 'Media ' . substr((string)$metadata['id'], 0, 32);
+  return [
+    'extractor' => $extractor,
+    'sourceTitle' => $title,
+    'isPlaylist' => in_array($type, ['playlist', 'multi_video'], true)
+  ];
 }
 
 function formatExtractorName($extractor) {
@@ -691,11 +697,12 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
       $result = [
         'valid' => true,
         'message' => $extractorName === 'this media service' ? 'Verified media link.' : 'Verified ' . $extractorName . ' link.',
-        'extractor' => $extractor
+        'extractor' => $extractor,
+        'sourceTitle' => normalizedOutputTitle($redditMedia === null ? $metadata['sourceTitle'] : $redditMedia['sourceTitle']),
+        'isPlaylist' => $redditMedia === null && !empty($metadata['isPlaylist'])
       ];
       if ($redditMedia !== null) {
         $result['downloadUrl'] = $redditMedia['downloadUrl'];
-        $result['sourceTitle'] = $redditMedia['sourceTitle'];
       }
     }
 
@@ -783,6 +790,8 @@ function enqueueDownloads($rawItems, $ownerId = null) {
     ];
     if (!empty($validation['downloadUrl'])) $job['downloadUrl'] = $validation['downloadUrl'];
     if (!empty($validation['sourceTitle'])) $job['sourceTitle'] = $validation['sourceTitle'];
+    if (!empty($validation['extractor'])) $job['extractor'] = $validation['extractor'];
+    if (!empty($validation['isPlaylist'])) $job['isPlaylist'] = true;
     if (!writeJob($jobId, $job)) {
       failCreatedJobs($createdJobs, 'The batch could not be queued.');
       sendJsonResponse(2, 'Failed to create the download queue.');
@@ -873,10 +882,15 @@ function getJobMode($job) {
 function formatJobForClient($job) {
   return [
     'id' => $job['id'],
+    'url' => $job['url'] ?? '',
+    'title' => $job['sourceTitle'] ?? 'Untitled media',
+    'source' => $job['extractor'] ?? 'media',
+    'isPlaylist' => !empty($job['isPlaylist']),
     'mode' => getJobMode($job),
     'state' => $job['state'] ?? 'unknown',
     'message' => $job['message'] ?? 'Job status loaded.',
     'outputCount' => (int)($job['outputCount'] ?? 0),
+    'outputNames' => array_values(array_filter($job['outputNames'] ?? [], 'is_string')),
     'createdAt' => $job['createdAt'] ?? null,
     'completedAt' => $job['completedAt'] ?? null
   ];
@@ -967,7 +981,7 @@ function runJob($jobId) {
 
 function processDownload($jobId, $job, $workDir) {
   $url = $job['downloadUrl'] ?? $job['url'];
-  $sourceTitle = $job['sourceTitle'] ?? null;
+  $sourceTitle = empty($job['isPlaylist']) ? ($job['sourceTitle'] ?? null) : null;
   $mode = getJobMode($job);
   $ownerId = (string)($job['ownerId'] ?? '');
   if (!preg_match('/^[a-f0-9]{64}$/', $ownerId)) {
@@ -1033,6 +1047,7 @@ function processDownload($jobId, $job, $workDir) {
     'message' => $message,
     'outputCount' => count($movedFiles),
     'outputIds' => array_column($movedFiles, 'id'),
+    'outputNames' => array_column($movedFiles, 'name'),
     'completedAt' => time()
   ]);
   return true;
@@ -1056,13 +1071,19 @@ function createWorkDir($jobId) {
   return mkdir($workDir, 0775, true) ? $workDir : null;
 }
 
-function outputTemplateForTitle($title) {
-  if (!is_string($title) || trim($title) === '') return OUTPUT_TEMPLATE;
+function normalizedOutputTitle($title) {
+  if (!is_string($title) || trim($title) === '') return null;
   $title = html_entity_decode(strip_tags($title), ENT_QUOTES | ENT_HTML5, 'UTF-8');
   $title = preg_replace('~[/\\\\\x00-\x1F\x7F]+~u', ' ', $title);
   $title = preg_replace('/\s+/u', ' ', trim((string)$title));
-  if ($title === '') return OUTPUT_TEMPLATE;
+  if ($title === '') return null;
   if (preg_match('/^.{1,180}/us', $title, $match)) $title = $match[0];
+  return $title;
+}
+
+function outputTemplateForTitle($title) {
+  $title = normalizedOutputTitle($title);
+  if ($title === null) return OUTPUT_TEMPLATE;
   return str_replace('%', '%%', $title) . '.%(ext)s';
 }
 
@@ -1169,12 +1190,18 @@ function getVideoCodec($file) {
 }
 
 function reEncodeFile($file, $directory) {
-  $outputFile = $directory . '/' . pathinfo($file, PATHINFO_FILENAME) . '_h264.mp4';
-  $result = executeCommand(['ffmpeg', '-y', '-i', $file, '-c:v', 'libx264', '-c:a', 'aac', $outputFile]);
+  $stem = pathinfo($file, PATHINFO_FILENAME);
+  $outputFile = $directory . '/' . $stem . '.mp4';
+  $temporaryOutput = $directory . '/' . $stem . '.h264-' . bin2hex(random_bytes(4)) . '.mp4';
+  $result = executeCommand(['ffmpeg', '-y', '-i', $file, '-c:v', 'libx264', '-c:a', 'aac', $temporaryOutput]);
   if ($result['exitCode'] === 0) {
-    unlink($file);
-    return true;
+    if (!unlink($file) || !rename($temporaryOutput, $outputFile)) {
+      @unlink($temporaryOutput);
+      return false;
+    }
+    return is_file($outputFile);
   }
+  @unlink($temporaryOutput);
   return false;
 }
 
@@ -1433,7 +1460,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   elseif (isset($_POST['validateUrl'])) {
     $validation = validateMediaUrl($_POST['validateUrl']);
     sendJsonResponse($validation['valid'] ? 0 : 2, $validation['message'], [
-      'valid' => $validation['valid']
+      'valid' => $validation['valid'],
+      'title' => $validation['sourceTitle'] ?? null,
+      'source' => $validation['extractor'] ?? null,
+      'isPlaylist' => !empty($validation['isPlaylist'])
     ]);
   }
   elseif (isset($_POST['queue'])) { enqueueDownloads($_POST['queue']); }

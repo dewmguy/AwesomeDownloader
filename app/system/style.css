@@ -111,9 +111,10 @@ form {
 }
 .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }
 .url-field-shell {
+  --url-status-width: 6.45rem;
   position: relative;
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  grid-template-columns: var(--url-status-width) minmax(0, 1fr) max-content;
   min-height: 2.875rem;
   min-width: 0;
   border: 2px solid rgba(255,255,255,.32);
@@ -124,7 +125,10 @@ form {
 .url-field-shell.validation-checking { border-color: #FFF }
 .url-field-shell.validation-valid { border-color: #5FC }
 .url-field-shell.validation-invalid { border-color: #E15A67 }
+.queue-url-content { display: grid; min-width: 0 }
+.queue-url-content > * { grid-area: 1 / 1 }
 .url-field-shell .queue-url {
+  width: 100%;
   min-width: 0;
   border: 0 !important;
   padding: .65rem .75rem;
@@ -136,7 +140,9 @@ form {
   align-items: center;
   justify-content: flex-start;
   gap: .4rem;
-  min-width: 6.45rem;
+  width: var(--url-status-width);
+  min-width: var(--url-status-width);
+  max-width: var(--url-status-width);
   height: 100%;
   border-right: 1px solid rgba(255,255,255,.18);
   padding: .55rem .7rem;
@@ -153,6 +159,27 @@ form {
 .url-field-shell .url-status.checking { background: rgba(255,255,255,.16); color: #FFF; opacity: 1 }
 .url-field-shell .url-status:disabled { opacity: 1; cursor: wait }
 .url-field-shell .url-status:disabled:hover { background: rgba(255,255,255,.16); color: #FFF }
+.verified-media {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  padding: .65rem .75rem;
+  background: transparent;
+  color: #FFF;
+  text-align: left;
+}
+.verified-media[hidden] { display: none }
+.verified-media:hover, .verified-media:focus-visible { background: rgba(0,170,136,.12); color: #FFF }
+.verified-media i { flex: 0 0 1.1rem; color: #5FC; font-size: 1.05rem; text-align: center }
+.verified-media-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 #queueActions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 2.75rem;
@@ -337,25 +364,54 @@ h2 {
   max-height: 24vh;
   overflow-y: auto;
 }
-#activeQueue h3 { font-family: "SFBold" }
-.queue-status {
+#activeQueue h3 { margin-bottom: .15rem; font-family: "SFBold" }
+.process-log-head,
+.process-log-entry {
   display: grid;
-  grid-template-columns: 5rem minmax(8rem, 1fr) minmax(9rem, 1.5fr);
-  gap: .5rem;
-  align-items: baseline;
-  border-left: 3px solid #0A8;
-  padding-left: .5rem;
+  grid-template-columns: minmax(6rem, .65fr) minmax(12rem, 2fr) minmax(9rem, 1.1fr);
+  gap: .75rem;
 }
-.queue-status-choice { color: #5FC; font-family: "SFBold" }
-.queue-status-url, .queue-status-message {
+.process-log-head {
+  padding: 0 .65rem .15rem;
+  color: rgba(255,255,255,.58);
+  font-family: "SFBold";
+  font-size: .7rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.process-log-entry {
+  align-items: start;
+  border-left: 3px solid #0A8;
+  padding: .55rem .65rem;
+  background: rgba(0,0,0,.22);
+}
+.process-log-conversion strong,
+.process-log-state-label { color: #5FC; font-family: "SFBold" }
+.process-log-media,
+.process-log-state { min-width: 0 }
+.process-log-title {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  min-width: 0;
+  font-family: "SFBold";
+}
+.process-log-title i { flex: 0 0 1rem; color: #5FC; text-align: center }
+.process-log-title span,
+.process-log-url,
+.process-log-message {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.queue-status-message { color: rgba(255,255,255,.8) }
-.queue-status.state-complete { border-color: #2B2 }
-.queue-status.state-failed { border-color: #D44 }
-.queue-status.state-failed .queue-status-message { color: #F99 }
+.process-log-url { margin-top: .16rem; color: rgba(255,255,255,.64); font-size: .76rem }
+.process-log-message { margin-top: .16rem; color: rgba(255,255,255,.72); font-size: .82rem }
+.process-log-entry.state-complete { border-color: #2B2 }
+.process-log-entry.state-failed { border-color: #D44 }
+.process-log-entry.state-failed .process-log-state-label,
+.process-log-entry.state-failed .process-log-message { color: #F99 }
+.process-log-mobile-label { display: none }
 
 #player { position: relative }
 #player video, #player audio, #player #image {
@@ -811,12 +867,22 @@ label.container {
   .box { padding: 2rem }
   .queue-row { grid-template-columns: minmax(0, 1fr) 2.5rem }
   .queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }
-  .url-field-shell .url-status { min-width: 5.5rem; padding: .5rem; font-size: .75rem }
+  .url-field-shell { --url-status-width: 5.5rem }
+  .url-field-shell .url-status { padding: .5rem; font-size: .75rem }
   .queue-mode-picker { min-width: 6.2rem }
   .queue-mode-button { gap: .3rem; padding: .5rem; font-size: .75rem }
   .queue-mode-verb { display: none }
-  .queue-status { grid-template-columns: 4.5rem minmax(0, 1fr) }
-  .queue-status-message { grid-column: 1 / -1; padding-left: 5rem }
+  .process-log-head { display: none }
+  .process-log-entry { grid-template-columns: minmax(0, 1fr); gap: .55rem }
+  .process-log-mobile-label {
+    display: block;
+    margin-bottom: .1rem;
+    color: rgba(255,255,255,.55);
+    font-family: "SFBold";
+    font-size: .65rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
   .list {
     max-height: unset;
   }

@@ -37,14 +37,14 @@ checkFrontend(str_contains($css, '.icons .fa-dailymotion::after') && str_contain
 checkFrontend(str_contains($css, 'height: 1.8rem;') && str_contains($css, 'width: 1.8rem;'), 'The Facebook white background size is incorrect.');
 
 checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing implementation name remains in the page.');
-checkFrontend(str_contains($html, 'style.css?v=20261012-queue-shadow'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'style.css?v=20261016-process-log'), 'The redesigned stylesheet is not cache-busted.');
 checkFrontend((bool)preg_match('/\.icons-featured\s*\{[^}]*background:\s*transparent;/s', $css), 'The featured icon strip still has a background.');
 checkFrontend(str_contains($css, '.icons-featured .fa-youtube,') && str_contains($css, '.icons-featured .fa-dailymotion { overflow: hidden }'), 'Featured brand-icon background layers are not clipped inside their glyph boxes.');
 checkFrontend((bool)preg_match('/\.icons-featured \.fa-facebook::after\s*\{[^}]*left:\s*5px;[^}]*height:\s*1\.7rem;[^}]*width:\s*1\.7rem;/s', $css), 'The featured Facebook backing is not safely inset.');
 checkFrontend(str_contains($html, 'class="queue-mode-button" aria-haspopup="listbox"'), 'The styled method picker is missing.');
 checkFrontend(str_contains($html, 'class="queue-mode-option" role="option"'), 'The styled method options are missing.');
 checkFrontend(str_contains($html, "text('Converting ')") && str_contains($html, "text('to ')"), 'The integrated format picker does not explain the conversion choice.');
-checkFrontend(str_contains($html, '$fieldShell.append($validation, $url, $modePicker);'), 'The format picker is not merged into the URL field shell.');
+checkFrontend(str_contains($html, '$fieldShell.append($validation, $urlContent, $modePicker);'), 'The format picker and verified media summary are not merged into the URL field shell.');
 checkFrontend(str_contains($css, 'font-family: "SFMedium", sans-serif;'), 'The method picker font is not explicitly styled.');
 checkFrontend(str_contains($css, '.queue-mode-verb { display: none }'), 'The phone layout does not preserve useful URL space.');
 checkFrontend(str_contains($css, '.queue-row.queue-row-single { grid-template-columns: minmax(0, 1fr) }'), 'The single-row layout still reserves delete-button space.');
@@ -56,7 +56,10 @@ checkFrontend(str_contains($html, 'class="url-status idle"'), 'The compact URL s
 checkFrontend(str_contains($html, 'class="url-status-label"') && str_contains($html, "invalid: 'Error'") && str_contains($html, "checking: 'Checking'") && str_contains($html, "valid: 'Verified'"), 'The visible one-word URL statuses are incomplete.');
 checkFrontend(!str_contains($html, 'class="url-validation"'), 'URL validation still adds a second row.');
 checkFrontend(str_contains($css, '.url-field-shell .url-status'), 'The compact URL status is not styled.');
-checkFrontend(str_contains($css, 'grid-template-columns: max-content minmax(0, 1fr) max-content;'), 'The unified status, URL, and format layout is missing.');
+checkFrontend(str_contains($css, 'grid-template-columns: var(--url-status-width) minmax(0, 1fr) max-content;'), 'The unified status, URL, and format layout is missing.');
+checkFrontend(str_contains($css, 'width: var(--url-status-width);') && str_contains($css, 'min-width: var(--url-status-width);') && str_contains($css, 'max-width: var(--url-status-width);'), 'URL status width still changes with its contents.');
+checkFrontend(str_contains($html, 'class="verified-media"') && str_contains($html, 'function sourcePresentation(source, url)'), 'Verified URLs do not provide a source-logo metadata summary.');
+checkFrontend(str_contains($html, 'sourceTitle: json.title') && str_contains($html, 'source: json.source'), 'Validation metadata is not retained in the URL field.');
 checkFrontend(str_contains($html, "$('#queueRows').on('paste', '.queue-url'"), 'Pasted URLs are not checked immediately.');
 checkFrontend(str_contains($html, ".prop('readonly', keepReadonly || state === 'checking' || state === 'valid')"), 'The URL is not locked while checking, after verification, or during a duplicate-output error.');
 checkFrontend(str_contains($html, "state === 'valid' ? accessibleMessage + ' Click to edit this URL.'"), 'The verified state does not explain how to edit the locked URL.');
@@ -73,6 +76,11 @@ checkFrontend(str_contains($css, '.queue-mode-picker.duplicate-output .queue-mod
 checkFrontend(str_contains($css, '#downloadSubmit:disabled,') && str_contains($css, 'background: #666;'), 'The disabled Process action is not gray.');
 checkFrontend(str_contains($html, 'a repeated link must use a different output'), 'Help does not explain unique outputs for repeated links.');
 checkFrontend(str_contains($html, 'fa-solid fa-gears'), 'The process action does not have a processing icon.');
+checkFrontend(str_contains($html, '<h3>Process Log</h3>') && str_contains($html, "text('Convert')") && str_contains($html, "text('Media')") && str_contains($html, "text('Status')"), 'The process log does not identify its conversion, media, and status fields.');
+checkFrontend(str_contains($html, "job.state === 'complete' ? 'Completed'") && str_contains($html, ": 'Active'"), 'The process log does not expose active and completed states.');
+checkFrontend(str_contains($html, "base: 'Original'") && str_contains($html, "['base', 'Original']"), 'The original-media choice is not consistently named Original.');
+checkFrontend(!str_contains($html, '>Base:</span>'), 'The obsolete Base label remains in the help content.');
+checkFrontend(str_contains($html, 'if (outputHideTimer !== null) clearTimeout(outputHideTimer);') && str_contains($html, '}, 10000);'), 'Output messages do not reset and auto-hide after ten seconds.');
 checkFrontend(str_contains($html, '>Save</span> beside a file to download it to your device.'), 'Help does not distinguish processing from saving.');
 checkFrontend(str_contains($html, 'id="copyTranscript"'), 'Transcript playback is missing its copy action.');
 checkFrontend(str_contains($html, 'navigator.clipboard.writeText(text)'), 'Transcript copying does not use the Clipboard API.');
