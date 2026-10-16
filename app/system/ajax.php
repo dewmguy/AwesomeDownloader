@@ -22,7 +22,7 @@ define('URL_VALIDATION_TIMEOUT', max(5, (int)(getenv('DOWNLOADER_URL_VALIDATION_
 define('URL_VALIDATION_CACHE_SECONDS', max(30, (int)(getenv('DOWNLOADER_URL_VALIDATION_CACHE_SECONDS') ?: 600)));
 define('URL_VALIDATION_CONCURRENCY', max(1, (int)(getenv('DOWNLOADER_URL_VALIDATION_CONCURRENCY') ?: 3)));
 define('URL_VALIDATION_LOCK_PARTITIONS', 256);
-define('URL_VALIDATION_CACHE_VERSION', 3);
+define('URL_VALIDATION_CACHE_VERSION', 4);
 define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://127.0.0.1:8000', '/'));
 define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: TEMP_DIR, '/'));
 define('TRANSCRIPTION_TIMEOUT', (int)(getenv('DOWNLOADER_TRANSCRIPTION_TIMEOUT') ?: 14400));
@@ -429,6 +429,70 @@ function validatePublicUrlTarget($url, $resolver = null) {
   return $structure;
 }
 
+function redditEmbedUrl($url) {
+  $parts = parse_url(trim((string)$url));
+  if (!is_array($parts)) return null;
+
+  $host = strtolower(rtrim((string)($parts['host'] ?? ''), '.'));
+  if (!in_array($host, ['reddit.com', 'www.reddit.com', 'old.reddit.com', 'new.reddit.com', 'embed.reddit.com'], true)) return null;
+
+  $path = (string)($parts['path'] ?? '');
+  if (!preg_match('~^/r/[a-z0-9_]+/comments/[a-z0-9]+(?:/[a-z0-9_-]*)?/?$~i', $path)) return null;
+  return 'https://embed.reddit.com' . rtrim($path, '/') . '/';
+}
+
+function parseRedditEmbedVideo($html) {
+  if (!is_string($html) || $html === '' || strlen($html) > 2 * 1024 * 1024) return null;
+  if (!preg_match('~<shreddit-screenview-data\b[^>]*\bdata="([^"]+)"~is', $html, $contextMatch)) return null;
+  $context = json_decode(html_entity_decode($contextMatch[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'), true);
+  $post = is_array($context) && isset($context['post']) && is_array($context['post']) ? $context['post'] : null;
+  if ($post === null || strtolower((string)($post['type'] ?? '')) !== 'video') return null;
+  if (!preg_match('~^https://v\.redd\.it/([a-z0-9]+)/?$~i', (string)($post['url'] ?? ''), $mediaMatch)) return null;
+
+  $decoded = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+  $title = 'Reddit video';
+  if (preg_match('~<a[^>]+id=["\']embed-title["\'][^>]*>.*?<h1[^>]*>(.*?)</h1>~is', $decoded, $titleMatch)) {
+    $candidate = preg_replace('/\s+/u', ' ', trim(strip_tags($titleMatch[1])));
+    if (is_string($candidate) && $candidate !== '') $title = $candidate;
+  }
+
+  return [
+    'downloadUrl' => 'https://v.redd.it/' . strtolower($mediaMatch[1]) . '/HLSPlaylist.m3u8',
+    'sourceTitle' => $title
+  ];
+}
+
+function resolveRedditVideo($url, $resolver = null, $fetcher = null) {
+  $embedUrl = redditEmbedUrl($url);
+  if ($embedUrl === null) return null;
+
+  $embedTarget = validatePublicUrlTarget($embedUrl, $resolver);
+  if (!$embedTarget['valid']) return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.');
+
+  $timeout = min(15, URL_VALIDATION_TIMEOUT);
+  $execution = $fetcher === null
+    ? executeCommand([
+      'curl', '--fail-with-body', '--silent', '--show-error', '--compressed',
+      '--max-time', (string)$timeout, '--max-filesize', (string)(2 * 1024 * 1024),
+      '--user-agent', 'Mozilla/5.0 (compatible; AwesomeDownloader/1.0)',
+      '--header', 'Accept: text/html', $embedTarget['url']
+    ], $timeout + 1)
+    : $fetcher($embedTarget['url'], $timeout);
+
+  if (!is_array($execution) || ($execution['exitCode'] ?? 1) !== 0) {
+    if ($fetcher === null && is_array($execution)) logValidationFailure($url, $execution, 0);
+    return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.');
+  }
+
+  $media = parseRedditEmbedVideo($execution['stdout'] ?? '');
+  if ($media === null) return invalidUrlResult('This Reddit post does not expose a public native video.');
+
+  $mediaTarget = validatePublicUrlTarget($media['downloadUrl'], $resolver);
+  if (!$mediaTarget['valid']) return invalidUrlResult('The Reddit video location could not be verified safely.');
+  $media['downloadUrl'] = $mediaTarget['url'];
+  return ['valid' => true, 'message' => 'Reddit video resolved.'] + $media;
+}
+
 function buildYtDlpValidationCommand($url) {
   return [
     'yt-dlp', '--yes-playlist', '--playlist-end', '1', '--skip-download',
@@ -570,7 +634,7 @@ function logValidationFailure($url, $execution, $elapsedSeconds) {
   error_log("Media URL validation failed host=$host exit=$exitCode timedOut=$timedOut durationMs=$durationMs detail=$detail");
 }
 
-function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = true) {
+function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = true, $redditFetcher = null) {
   $target = validatePublicUrlTarget($url, $resolver);
   if (!$target['valid']) return $target;
   $url = $target['url'];
@@ -601,7 +665,14 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
   }
 
   try {
-    $command = buildYtDlpValidationCommand($url);
+    $validationUrl = $url;
+    $redditMedia = resolveRedditVideo($url, $resolver, $redditFetcher);
+    if ($redditMedia !== null && empty($redditMedia['valid'])) {
+      return $redditMedia;
+    }
+    if (!empty($redditMedia['downloadUrl'])) $validationUrl = $redditMedia['downloadUrl'];
+
+    $command = buildYtDlpValidationCommand($validationUrl);
     $startedAt = microtime(true);
     $execution = $runner === null
       ? executeCommand($command, URL_VALIDATION_TIMEOUT)
@@ -615,12 +686,17 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
       $result = validationFailureResult($execution);
     }
     else {
-      $extractorName = formatExtractorName($metadata['extractor']);
+      $extractor = $redditMedia === null ? $metadata['extractor'] : 'Reddit';
+      $extractorName = formatExtractorName($extractor);
       $result = [
         'valid' => true,
         'message' => $extractorName === 'this media service' ? 'Verified media link.' : 'Verified ' . $extractorName . ' link.',
-        'extractor' => $metadata['extractor']
+        'extractor' => $extractor
       ];
+      if ($redditMedia !== null) {
+        $result['downloadUrl'] = $redditMedia['downloadUrl'];
+        $result['sourceTitle'] = $redditMedia['sourceTitle'];
+      }
     }
 
     if ($useCache) writeUrlValidationCache($url, $result);
@@ -694,6 +770,7 @@ function enqueueDownloads($rawItems, $ownerId = null) {
   $createdJobs = [];
   foreach ($normalized['items'] as $queueIndex => $item) {
     $jobId = createJobId();
+    $validation = $validationResults[hash('sha256', $item['url'])];
     $job = [
       'id' => $jobId,
       'url' => $item['url'],
@@ -704,6 +781,8 @@ function enqueueDownloads($rawItems, $ownerId = null) {
       'createdAt' => microtime(true) + ($queueIndex / 1000),
       'updatedAt' => time()
     ];
+    if (!empty($validation['downloadUrl'])) $job['downloadUrl'] = $validation['downloadUrl'];
+    if (!empty($validation['sourceTitle'])) $job['sourceTitle'] = $validation['sourceTitle'];
     if (!writeJob($jobId, $job)) {
       failCreatedJobs($createdJobs, 'The batch could not be queued.');
       sendJsonResponse(2, 'Failed to create the download queue.');
@@ -887,7 +966,8 @@ function runJob($jobId) {
 }
 
 function processDownload($jobId, $job, $workDir) {
-  $url = $job['url'];
+  $url = $job['downloadUrl'] ?? $job['url'];
+  $sourceTitle = $job['sourceTitle'] ?? null;
   $mode = getJobMode($job);
   $ownerId = (string)($job['ownerId'] ?? '');
   if (!preg_match('/^[a-f0-9]{64}$/', $ownerId)) {
@@ -913,7 +993,7 @@ function processDownload($jobId, $job, $workDir) {
   }
 
   updateJob($jobId, ['state' => 'downloading', 'message' => $mode === 'transcribe' ? 'Retrieving audio for transcription.' : 'Retrieving media or playlist.']);
-  $executionResult = executeCommand(buildYtDlpCommand($url, $mode, $workDir));
+  $executionResult = executeCommand(buildYtDlpCommand($url, $mode, $workDir, $sourceTitle));
   if ($executionResult['exitCode'] !== 0) {
     failJob($jobId, $executionResult, 'Download failed.');
     return false;
@@ -976,7 +1056,17 @@ function createWorkDir($jobId) {
   return mkdir($workDir, 0775, true) ? $workDir : null;
 }
 
-function buildYtDlpCommand($url, $mode, $workDir) {
+function outputTemplateForTitle($title) {
+  if (!is_string($title) || trim($title) === '') return OUTPUT_TEMPLATE;
+  $title = html_entity_decode(strip_tags($title), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+  $title = preg_replace('~[/\\\\\x00-\x1F\x7F]+~u', ' ', $title);
+  $title = preg_replace('/\s+/u', ' ', trim((string)$title));
+  if ($title === '') return OUTPUT_TEMPLATE;
+  if (preg_match('/^.{1,180}/us', $title, $match)) $title = $match[0];
+  return str_replace('%', '%%', $title) . '.%(ext)s';
+}
+
+function buildYtDlpCommand($url, $mode, $workDir, $sourceTitle = null) {
   $command = ['yt-dlp', '--yes-playlist', '--playlist-end', (string)PLAYLIST_MAX_ITEMS];
   if (in_array($mode, ['mp3', 'transcribe'], true)) {
     array_push($command, '-x', '--audio-format', 'mp3', '--audio-quality', '0');
@@ -984,7 +1074,7 @@ function buildYtDlpCommand($url, $mode, $workDir) {
   else {
     array_push($command, '--merge-output-format', 'mp4');
   }
-  array_push($command, '--no-mtime', '-o', OUTPUT_TEMPLATE, '-P', $workDir, $url);
+  array_push($command, '--no-mtime', '-o', outputTemplateForTitle($sourceTitle), '-P', $workDir, $url);
   return $command;
 }
 

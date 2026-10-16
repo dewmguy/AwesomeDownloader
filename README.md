@@ -23,6 +23,8 @@ transcription container.
 - server-side URL and DNS checks that reject private network targets
 - bounded, success-only URL-validation caching to make transient site failures
   immediately retryable
+- a public-embed fallback for native Reddit videos when Reddit blocks its JSON
+  metadata endpoint for server traffic
 
 ## Requirements
 
@@ -297,6 +299,10 @@ Some source sites reject datacenter IPs or require signed-in browser cookies.
 An authentication-required response from Reddit or YouTube can therefore be a
 source policy rather than a container failure. Failed and transient URL
 validations are not cached, so they can be retried immediately.
+
+Canonical public Reddit posts containing native `v.redd.it` video use Reddit's
+public embed metadata as a fallback and do not require account cookies. Private,
+deleted, non-video, and unsupported Reddit posts can still be unavailable.
 
 ## Security and expected limits
 

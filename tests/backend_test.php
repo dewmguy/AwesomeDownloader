@@ -49,6 +49,22 @@ check(!$privateTarget['valid'], 'A hostname with a private DNS answer was accept
 $unresolvedTarget = validatePublicUrlTarget('https://media.public-site.net/video', fn($host) => []);
 check(!$unresolvedTarget['valid'], 'An unresolvable hostname was accepted.');
 
+$redditUrl = 'https://www.reddit.com/r/example/comments/abc123/a_public_video/';
+check(redditEmbedUrl($redditUrl) === 'https://embed.reddit.com/r/example/comments/abc123/a_public_video/', 'A canonical Reddit post URL did not map to its embed URL.');
+check(redditEmbedUrl('https://www.reddit.com/r/example/s/share-code') === null, 'An unsupported Reddit share URL was treated as a canonical post.');
+$redditEmbedHtml = <<<'HTML'
+<a id="embed-title" href="https://www.reddit.com/r/example/comments/abc123/a_public_video/">
+  <h1>A public / 100% video</h1>
+</a>
+<shreddit-screenview-data data="{&quot;post&quot;:{&quot;url&quot;:&quot;https://v.redd.it/media123&quot;,&quot;type&quot;:&quot;video&quot;}}"></shreddit-screenview-data>
+HTML;
+$parsedRedditVideo = parseRedditEmbedVideo($redditEmbedHtml);
+check(($parsedRedditVideo['downloadUrl'] ?? '') === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit embed video playlist was not extracted.');
+check(($parsedRedditVideo['sourceTitle'] ?? '') === 'A public / 100% video', 'The Reddit embed title was not extracted.');
+check(parseRedditEmbedVideo('<p>No native video</p>') === null, 'A Reddit embed without native video media was accepted.');
+check(parseRedditEmbedVideo('<shreddit-screenview-data data="{&quot;post&quot;:{&quot;url&quot;:&quot;https://v.redd.it/media123&quot;,&quot;type&quot;:&quot;link&quot;}}"></shreddit-screenview-data>') === null, 'A non-video Reddit post containing a media link was accepted.');
+check(parseRedditEmbedVideo('<shreddit-screenview-data data="{&quot;post&quot;:{&quot;url&quot;:&quot;https://v.redd.it.attacker.example/media123&quot;,&quot;type&quot;:&quot;video&quot;}}"></shreddit-screenview-data>') === null, 'A lookalike Reddit media hostname was accepted.');
+
 $validationCommand = buildYtDlpValidationCommand('https://www.youtube.com/watch?v=test');
 check(in_array('--dump-single-json', $validationCommand, true) && in_array('--skip-download', $validationCommand, true), 'yt-dlp validation is not metadata-only.');
 check(in_array('--playlist-end', $validationCommand, true) && in_array('1', $validationCommand, true), 'yt-dlp validation does not limit playlist inspection.');
@@ -77,6 +93,32 @@ $supported = validateMediaUrl(
 );
 check($supported['valid'] && ($supported['extractor'] ?? '') === 'Example', 'A supported public media URL failed validation.');
 check($runnerTimeout === URL_VALIDATION_TIMEOUT, 'The compatibility runner did not receive the validation timeout.');
+$redditValidationUrl = null;
+$redditFetchUrl = null;
+$redditSupported = validateMediaUrl(
+  $redditUrl,
+  fn($host) => ['8.8.8.8'],
+  function($command, $timeout) use (&$redditValidationUrl) {
+    $redditValidationUrl = end($command);
+    return ['exitCode' => 0, 'stdout' => '{"id":"reddit-video","extractor_key":"Generic","formats":[{"format_id":"one"}]}', 'stderr' => '', 'timedOut' => false];
+  },
+  false,
+  function($embedUrl, $timeout) use (&$redditFetchUrl, $redditEmbedHtml) {
+    $redditFetchUrl = $embedUrl;
+    return ['exitCode' => 0, 'stdout' => $redditEmbedHtml, 'stderr' => '', 'timedOut' => false];
+  }
+);
+check($redditSupported['valid'] && ($redditSupported['extractor'] ?? '') === 'Reddit', 'A public native Reddit video failed embed fallback validation.');
+check($redditFetchUrl === redditEmbedUrl($redditUrl), 'The Reddit fallback fetched an unexpected endpoint.');
+check($redditValidationUrl === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit fallback did not validate the resolved media playlist.');
+check(($redditSupported['downloadUrl'] ?? '') === $redditValidationUrl, 'The validated Reddit media URL was not retained for processing.');
+check(($redditSupported['sourceTitle'] ?? '') === 'A public / 100% video', 'The validated Reddit title was not retained for processing.');
+$redditNoVideo = resolveRedditVideo(
+  $redditUrl,
+  fn($host) => ['8.8.8.8'],
+  fn($embedUrl, $timeout) => ['exitCode' => 0, 'stdout' => '<p>No native video</p>', 'stderr' => '', 'timedOut' => false]
+);
+check(!$redditNoVideo['valid'] && str_contains($redditNoVideo['message'], 'native video'), 'A Reddit post without public native video media received an unclear error.');
 $cacheRuns = 0;
 $cacheRunner = function($command, $timeout) use (&$cacheRuns) {
   $cacheRuns++;
@@ -130,6 +172,10 @@ check(in_array('--playlist-end', $command, true) && in_array((string)PLAYLIST_MA
 check(in_array('--audio-format', $command, true) && in_array('mp3', $command, true), 'Transcription does not download audio.');
 check(end($command) === 'https://www.youtube.com/playlist?list=test', 'URL is not passed as one final argv value.');
 check(str_contains(OUTPUT_TEMPLATE, '%(playlist_index|)s%(playlist_index& - |)s'), 'Playlist filename numbering is missing.');
+$redditCommand = buildYtDlpCommand('https://v.redd.it/media123/HLSPlaylist.m3u8', 'base', '/tmp/work', 'A public / 100% video');
+$outputIndex = array_search('-o', $redditCommand, true);
+$redditOutputTemplate = $outputIndex === false ? '' : ($redditCommand[$outputIndex + 1] ?? '');
+check($redditOutputTemplate === 'A public 100%% video.%(ext)s', 'The resolved Reddit title was not converted into a safe output template.');
 
 $processResult = executeCommand([PHP_BINARY, '-r', 'fwrite(STDOUT, "out"); fwrite(STDERR, "err");']);
 check($processResult['exitCode'] === 0, 'File-backed process execution failed.');
