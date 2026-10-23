@@ -4,6 +4,9 @@ services:
       context: .
       args:
         WHISPER_MODEL: ${WHISPER_MODEL:-small}
+        APP_VERSION: ${APP_VERSION:-2026.10.22}
+        APP_COMMIT: ${APP_COMMIT:-unknown}
+        APP_UPDATED_AT: ${APP_UPDATED_AT:-2026-10-22}
     image: awesome-downloader:latest
     container_name: awesome-downloader
     ports:

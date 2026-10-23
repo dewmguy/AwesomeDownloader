@@ -96,25 +96,26 @@ $supported = validateMediaUrl(
 );
 check($supported['valid'] && ($supported['extractor'] ?? '') === 'Example', 'A supported public media URL failed validation.');
 check($runnerTimeout === URL_VALIDATION_TIMEOUT, 'The compatibility runner did not receive the validation timeout.');
-$redditValidationUrl = null;
-$redditFetchUrl = null;
+$redditRunnerCalled = false;
+$redditFetches = [];
 $redditSupported = validateMediaUrl(
   $redditUrl,
   fn($host) => ['8.8.8.8'],
-  function($command, $timeout) use (&$redditValidationUrl) {
-    $redditValidationUrl = end($command);
-    return ['exitCode' => 0, 'stdout' => '{"id":"reddit-video","extractor_key":"Generic","formats":[{"format_id":"one"}]}', 'stderr' => '', 'timedOut' => false];
+  function($command, $timeout) use (&$redditRunnerCalled) {
+    $redditRunnerCalled = true;
+    return ['exitCode' => 1, 'stdout' => '', 'stderr' => 'Reddit must not use the generic probe.', 'timedOut' => false];
   },
   false,
-  function($embedUrl, $timeout) use (&$redditFetchUrl, $redditEmbedHtml) {
-    $redditFetchUrl = $embedUrl;
-    return ['exitCode' => 0, 'stdout' => $redditEmbedHtml, 'stderr' => '', 'timedOut' => false];
+  function($fetchUrl, $timeout, $stage) use (&$redditFetches, $redditEmbedHtml) {
+    $redditFetches[$stage] = $fetchUrl;
+    return ['exitCode' => 0, 'stdout' => $stage === 'embed' ? $redditEmbedHtml : "#EXTM3U\n#EXT-X-VERSION:3\n", 'stderr' => '', 'timedOut' => false];
   }
 );
 check($redditSupported['valid'] && ($redditSupported['extractor'] ?? '') === 'Reddit', 'A public native Reddit video failed embed fallback validation.');
-check($redditFetchUrl === redditEmbedUrl($redditUrl), 'The Reddit fallback fetched an unexpected endpoint.');
-check($redditValidationUrl === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit fallback did not validate the resolved media playlist.');
-check(($redditSupported['downloadUrl'] ?? '') === $redditValidationUrl, 'The validated Reddit media URL was not retained for processing.');
+check(($redditFetches['embed'] ?? '') === redditEmbedUrl($redditUrl), 'The Reddit fallback fetched an unexpected endpoint.');
+check(($redditFetches['manifest'] ?? '') === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit fallback did not verify the resolved media playlist.');
+check(!$redditRunnerCalled, 'Reddit validation still performs the slower generic extractor probe.');
+check(($redditSupported['downloadUrl'] ?? '') === ($redditFetches['manifest'] ?? null), 'The validated Reddit media URL was not retained for processing.');
 check(($redditSupported['sourceTitle'] ?? '') === 'A public 100% video', 'The validated Reddit title was not normalized to its saved filename.');
 $redditNoVideo = resolveRedditVideo(
   $redditUrl,
@@ -122,6 +123,13 @@ $redditNoVideo = resolveRedditVideo(
   fn($embedUrl, $timeout) => ['exitCode' => 0, 'stdout' => '<p>No native video</p>', 'stderr' => '', 'timedOut' => false]
 );
 check(!$redditNoVideo['valid'] && str_contains($redditNoVideo['message'], 'native video'), 'A Reddit post without public native video media received an unclear error.');
+$redditBrokenManifest = resolveRedditVideo(
+  $redditUrl,
+  fn($host) => ['8.8.8.8'],
+  fn($fetchUrl, $timeout, $stage) => ['exitCode' => 0, 'stdout' => $stage === 'embed' ? $redditEmbedHtml : '<html>not media</html>', 'stderr' => '', 'timedOut' => false]
+);
+check(!$redditBrokenManifest['valid'] && str_contains($redditBrokenManifest['message'], 'media stream'), 'An invalid Reddit HLS manifest was accepted or explained unclearly.');
+check(($redditBrokenManifest['diagnosticStage'] ?? '') === 'reddit_manifest_fetch', 'The Reddit manifest failure was not identified in diagnostics.');
 $cacheRuns = 0;
 $cacheRunner = function($command, $timeout) use (&$cacheRuns) {
   $cacheRuns++;
@@ -168,6 +176,7 @@ $unsupported = validateMediaUrl(
   false
 );
 check(!$unsupported['valid'] && !str_contains(strtolower($unsupported['message']), 'yt-dlp'), 'An unsupported page exposed an implementation detail or passed validation.');
+check(($unsupported['diagnosticStage'] ?? '') === 'media_extractor' && str_contains($unsupported['diagnosticDetail'] ?? '', 'unsupported'), 'Extractor failure diagnostics were not retained for operators.');
 
 $command = buildYtDlpCommand('https://www.youtube.com/playlist?list=test', 'transcribe', '/tmp/work');
 check(in_array('--yes-playlist', $command, true), 'Playlist downloads are not explicitly enabled.');
@@ -214,10 +223,15 @@ check(visitorIdForToken('visitor-a') !== visitorIdForToken('visitor-b'), 'Distin
 ensureRuntimeDirs();
 check(is_file(DATABASE_PATH), 'The SQLite runtime database was not initialized.');
 $tables = database()->query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
-check(in_array('jobs', $tables, true) && in_array('files', $tables, true) && in_array('validation_cache', $tables, true), 'The SQLite schema is incomplete.');
+check(in_array('jobs', $tables, true) && in_array('files', $tables, true) && in_array('validation_cache', $tables, true) && in_array('url_events', $tables, true), 'The SQLite schema is incomplete.');
 $now = time();
 $ownerA = hash('sha256', 'owner-a');
 $ownerB = hash('sha256', 'owner-b');
+check(recordUrlEvent($ownerA, 'field_paste', 'https://media.public-site.net/watch?token=debug', 'idle', 'URL pasted.', ['trigger' => 'paste'], 'url-test-1'), 'A URL interaction event was not stored.');
+$recentEvents = listUrlEvents(1);
+check(($recentEvents[0]['url'] ?? '') === 'https://media.public-site.net/watch?token=debug' && ($recentEvents[0]['event_type'] ?? '') === 'field_paste', 'URL diagnostics did not retain the attempted URL and interaction.');
+check(($recentEvents[0]['details']['trigger'] ?? '') === 'paste', 'URL diagnostic details were not retained.');
+check((appBuildInfo()['version'] ?? '') === '2026.10.22', 'Build information is not available to the Help dialog.');
 $sourceDir = $testRoot . '/source';
 mkdir($sourceDir, 0775, true);
 file_put_contents($sourceDir . '/Example & notes.txt', 'private transcript');
@@ -282,14 +296,16 @@ database()->prepare('UPDATE validation_cache SET created_at = :created_at WHERE 
   ':created_at' => $oldTimestamp,
   ':cache_key' => hash('sha256', $oldCacheUrl)
 ]);
+recordUrlEvent($ownerA, 'validation_completed', 'https://media.public-site.net/expired-log', 'invalid', 'Expired diagnostic.', [], 'url-old', $oldTimestamp);
 $cleanup = purgeExpiredContent($now);
 check(readFileMetadata($expired['id']) === null && !is_file(FINAL_DIR . '/' . $expired['storageName']), 'Expired tracked output was not permanently removed.');
 check(!is_file(FINAL_DIR . '/legacy-old.mp3'), 'Expired legacy output was not permanently removed.');
 check(!is_file(FINAL_DIR . '/abandoned.part'), 'Expired partial output was not permanently removed.');
 $oldJobCount = database()->query("SELECT count(*) FROM jobs WHERE id = '$oldJobId'")->fetchColumn();
 $oldCacheCount = database()->query("SELECT count(*) FROM validation_cache WHERE cache_key = '" . hash('sha256', $oldCacheUrl) . "'")->fetchColumn();
-check((int)$oldJobCount === 0 && (int)$oldCacheCount === 0, 'Expired job or validation metadata was not removed.');
-check(($cleanup['files'] ?? 0) >= 3 && ($cleanup['jobs'] ?? 0) >= 1 && ($cleanup['cache'] ?? 0) >= 1, 'Cleanup counters do not reflect expired data.');
+$oldUrlEventCount = database()->query("SELECT count(*) FROM url_events WHERE request_id = 'url-old'")->fetchColumn();
+check((int)$oldJobCount === 0 && (int)$oldCacheCount === 0 && (int)$oldUrlEventCount === 0, 'Expired job, validation cache, or URL diagnostics were not removed.');
+check(($cleanup['files'] ?? 0) >= 3 && ($cleanup['jobs'] ?? 0) >= 1 && ($cleanup['cache'] ?? 0) >= 1 && ($cleanup['urlEvents'] ?? 0) >= 1, 'Cleanup counters do not reflect expired data.');
 
 check(jobBelongsToOwner(['ownerId' => $ownerA], $ownerA), 'Owner job authorization failed.');
 check(!jobBelongsToOwner(['ownerId' => $ownerA], $ownerB), 'Another visitor passed job authorization.');

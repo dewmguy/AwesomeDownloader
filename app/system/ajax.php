@@ -22,7 +22,12 @@ define('URL_VALIDATION_TIMEOUT', max(5, (int)(getenv('DOWNLOADER_URL_VALIDATION_
 define('URL_VALIDATION_CACHE_SECONDS', max(30, (int)(getenv('DOWNLOADER_URL_VALIDATION_CACHE_SECONDS') ?: 600)));
 define('URL_VALIDATION_CONCURRENCY', max(1, (int)(getenv('DOWNLOADER_URL_VALIDATION_CONCURRENCY') ?: 3)));
 define('URL_VALIDATION_LOCK_PARTITIONS', 256);
-define('URL_VALIDATION_CACHE_VERSION', 5);
+define('URL_VALIDATION_CACHE_VERSION', 6);
+define('URL_EVENT_RETENTION_SECONDS', 72 * 60 * 60);
+define('URL_EVENT_RATE_LIMIT', 500);
+define('APP_VERSION', getenv('APP_VERSION') ?: '2026.10.22');
+define('APP_COMMIT', getenv('APP_COMMIT') ?: 'unknown');
+define('APP_UPDATED_AT', getenv('APP_UPDATED_AT') ?: '2026-10-22');
 define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://127.0.0.1:8000', '/'));
 define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: TEMP_DIR, '/'));
 define('TRANSCRIPTION_TIMEOUT', (int)(getenv('DOWNLOADER_TRANSCRIPTION_TIMEOUT') ?: 14400));
@@ -124,10 +129,84 @@ function database() {
       created_at INTEGER NOT NULL,
       result_json TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS validation_cache_created_idx ON validation_cache (created_at);'
+    CREATE INDEX IF NOT EXISTS validation_cache_created_idx ON validation_cache (created_at);
+    CREATE TABLE IF NOT EXISTS url_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner_id TEXT NOT NULL,
+      request_id TEXT,
+      created_at REAL NOT NULL,
+      event_type TEXT NOT NULL,
+      url TEXT,
+      status TEXT,
+      message TEXT,
+      details_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS url_events_created_idx ON url_events (created_at);
+    CREATE INDEX IF NOT EXISTS url_events_owner_created_idx ON url_events (owner_id, created_at);'
   );
-  $connection->exec('PRAGMA user_version = 1');
+  $connection->exec('PRAGMA user_version = 2');
   return $connection;
+}
+
+function sanitizedUrlEventText($value, $maxLength) {
+  $value = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', trim((string)$value));
+  if (!is_string($value)) return '';
+  return strlen($value) > $maxLength ? substr($value, 0, $maxLength) : $value;
+}
+
+function recordUrlEvent($ownerId, $eventType, $url = null, $status = null, $message = null, $details = [], $requestId = null, $createdAt = null) {
+  $ownerId = sanitizedUrlEventText($ownerId, 128);
+  $eventType = strtolower(sanitizedUrlEventText($eventType, 64));
+  if ($ownerId === '' || !preg_match('/^[a-z0-9_-]+$/i', $eventType)) return false;
+
+  try {
+    $createdAt = $createdAt ?? microtime(true);
+    $rate = database()->prepare('SELECT count(*) FROM url_events WHERE owner_id = :owner_id AND created_at >= :cutoff');
+    $rate->execute([':owner_id' => $ownerId, ':cutoff' => $createdAt - 600]);
+    if ((int)$rate->fetchColumn() >= URL_EVENT_RATE_LIMIT) return false;
+
+    $safeDetails = [];
+    if (is_array($details)) {
+      foreach (array_slice($details, 0, 20, true) as $key => $value) {
+        $key = sanitizedUrlEventText($key, 64);
+        if ($key === '' || (!is_scalar($value) && $value !== null)) continue;
+        $safeDetails[$key] = is_string($value) ? sanitizedUrlEventText($value, 1000) : $value;
+      }
+    }
+    $detailsJson = empty($safeDetails) ? null : json_encode($safeDetails, JSON_UNESCAPED_SLASHES);
+    $statement = database()->prepare(
+      'INSERT INTO url_events (owner_id, request_id, created_at, event_type, url, status, message, details_json)
+       VALUES (:owner_id, :request_id, :created_at, :event_type, :url, :status, :message, :details_json)'
+    );
+    return $statement->execute([
+      ':owner_id' => $ownerId,
+      ':request_id' => ($requestId = sanitizedUrlEventText($requestId, 128)) === '' ? null : $requestId,
+      ':created_at' => $createdAt,
+      ':event_type' => $eventType,
+      ':url' => ($url = sanitizedUrlEventText($url, URL_MAX_LENGTH)) === '' ? null : $url,
+      ':status' => ($status = sanitizedUrlEventText($status, 64)) === '' ? null : $status,
+      ':message' => ($message = sanitizedUrlEventText($message, 2000)) === '' ? null : $message,
+      ':details_json' => $detailsJson === false ? null : $detailsJson
+    ]);
+  }
+  catch (Throwable $error) {
+    error_log('URL diagnostic event could not be recorded: ' . $error->getMessage());
+    return false;
+  }
+}
+
+function listUrlEvents($limit = 100) {
+  $limit = max(1, min(1000, (int)$limit));
+  $statement = database()->query(
+    'SELECT id, owner_id, request_id, created_at, event_type, url, status, message, details_json
+     FROM url_events ORDER BY id DESC LIMIT ' . $limit
+  );
+  $events = $statement->fetchAll();
+  foreach ($events as &$event) {
+    $event['details'] = json_decode((string)($event['details_json'] ?? ''), true) ?: null;
+    unset($event['details_json']);
+  }
+  return $events;
 }
 
 function readFileMetadata($fileId) {
@@ -312,8 +391,8 @@ function getMediaDurations($url) {
   return null;
 }
 
-function invalidUrlResult($message) {
-  return ['valid' => false, 'message' => $message];
+function invalidUrlResult($message, $diagnostic = []) {
+  return ['valid' => false, 'message' => $message] + (is_array($diagnostic) ? $diagnostic : []);
 }
 
 function validateUrlStructure($url) {
@@ -467,7 +546,10 @@ function resolveRedditVideo($url, $resolver = null, $fetcher = null) {
   if ($embedUrl === null) return null;
 
   $embedTarget = validatePublicUrlTarget($embedUrl, $resolver);
-  if (!$embedTarget['valid']) return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.');
+  if (!$embedTarget['valid']) return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.', [
+    'diagnosticStage' => 'reddit_embed_target',
+    'diagnosticDetail' => $embedTarget['message'] ?? 'Embed target rejected.'
+  ]);
 
   $timeout = min(15, URL_VALIDATION_TIMEOUT);
   $execution = $fetcher === null
@@ -477,19 +559,51 @@ function resolveRedditVideo($url, $resolver = null, $fetcher = null) {
       '--user-agent', 'Mozilla/5.0 (compatible; AwesomeDownloader/1.0)',
       '--header', 'Accept: text/html', $embedTarget['url']
     ], $timeout + 1)
-    : $fetcher($embedTarget['url'], $timeout);
+    : $fetcher($embedTarget['url'], $timeout, 'embed');
 
   if (!is_array($execution) || ($execution['exitCode'] ?? 1) !== 0) {
     if ($fetcher === null && is_array($execution)) logValidationFailure($url, $execution, 0);
-    return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.');
+    return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.', [
+      'diagnosticStage' => 'reddit_embed_fetch',
+      'diagnosticDetail' => sanitizedValidationError($execution['stderr'] ?? ''),
+      'exitCode' => (int)($execution['exitCode'] ?? 1),
+      'timedOut' => !empty($execution['timedOut'])
+    ]);
   }
 
   $media = parseRedditEmbedVideo($execution['stdout'] ?? '');
-  if ($media === null) return invalidUrlResult('This Reddit post does not expose a public native video.');
+  if ($media === null) return invalidUrlResult('This Reddit post does not expose a public native video.', [
+    'diagnosticStage' => 'reddit_embed_parse',
+    'diagnosticDetail' => 'No public native-video metadata was found in the embed response.'
+  ]);
 
   $mediaTarget = validatePublicUrlTarget($media['downloadUrl'], $resolver);
-  if (!$mediaTarget['valid']) return invalidUrlResult('The Reddit video location could not be verified safely.');
+  if (!$mediaTarget['valid']) return invalidUrlResult('The Reddit video location could not be verified safely.', [
+    'diagnosticStage' => 'reddit_media_target',
+    'diagnosticDetail' => $mediaTarget['message'] ?? 'Media target rejected.'
+  ]);
   $media['downloadUrl'] = $mediaTarget['url'];
+
+  $manifestExecution = $fetcher === null
+    ? executeCommand([
+      'curl', '--fail-with-body', '--silent', '--show-error', '--compressed',
+      '--max-time', (string)$timeout, '--max-filesize', (string)(256 * 1024),
+      '--user-agent', 'Mozilla/5.0 (compatible; AwesomeDownloader/1.0)',
+      '--header', 'Accept: application/vnd.apple.mpegurl', $mediaTarget['url']
+    ], $timeout + 1)
+    : $fetcher($mediaTarget['url'], $timeout, 'manifest');
+  $manifest = is_array($manifestExecution) ? ltrim((string)($manifestExecution['stdout'] ?? '')) : '';
+  if (!is_array($manifestExecution) || ($manifestExecution['exitCode'] ?? 1) !== 0 || !str_starts_with($manifest, '#EXTM3U')) {
+    if ($fetcher === null && is_array($manifestExecution)) logValidationFailure($url, $manifestExecution, 0);
+    return invalidUrlResult('Reddit exposed a video, but its media stream could not be reached. Try again in a moment.', [
+      'diagnosticStage' => 'reddit_manifest_fetch',
+      'diagnosticDetail' => ($manifestExecution['exitCode'] ?? 1) === 0
+        ? 'The media response was not an HLS manifest.'
+        : sanitizedValidationError($manifestExecution['stderr'] ?? ''),
+      'exitCode' => (int)($manifestExecution['exitCode'] ?? 1),
+      'timedOut' => !empty($manifestExecution['timedOut'])
+    ]);
+  }
   return ['valid' => true, 'message' => 'Reddit video resolved.'] + $media;
 }
 
@@ -640,6 +754,18 @@ function logValidationFailure($url, $execution, $elapsedSeconds) {
   error_log("Media URL validation failed host=$host exit=$exitCode timedOut=$timedOut durationMs=$durationMs detail=$detail");
 }
 
+function validationDiagnosticDetails($validation, $durationMs) {
+  return [
+    'durationMs' => max(0, (int)$durationMs),
+    'source' => $validation['extractor'] ?? null,
+    'title' => $validation['sourceTitle'] ?? null,
+    'stage' => $validation['diagnosticStage'] ?? null,
+    'detail' => $validation['diagnosticDetail'] ?? null,
+    'exitCode' => $validation['exitCode'] ?? null,
+    'timedOut' => $validation['timedOut'] ?? null
+  ];
+}
+
 function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = true, $redditFetcher = null) {
   $target = validatePublicUrlTarget($url, $resolver);
   if (!$target['valid']) return $target;
@@ -671,14 +797,25 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
   }
 
   try {
-    $validationUrl = $url;
     $redditMedia = resolveRedditVideo($url, $resolver, $redditFetcher);
     if ($redditMedia !== null && empty($redditMedia['valid'])) {
       return $redditMedia;
     }
-    if (!empty($redditMedia['downloadUrl'])) $validationUrl = $redditMedia['downloadUrl'];
 
-    $command = buildYtDlpValidationCommand($validationUrl);
+    if ($redditMedia !== null) {
+      $result = [
+        'valid' => true,
+        'message' => 'Verified Reddit link.',
+        'extractor' => 'Reddit',
+        'sourceTitle' => normalizedOutputTitle($redditMedia['sourceTitle'] ?? 'Reddit video'),
+        'isPlaylist' => false,
+        'downloadUrl' => $redditMedia['downloadUrl']
+      ];
+      if ($useCache) writeUrlValidationCache($url, $result);
+      return $result;
+    }
+
+    $command = buildYtDlpValidationCommand($url);
     $startedAt = microtime(true);
     $execution = $runner === null
       ? executeCommand($command, URL_VALIDATION_TIMEOUT)
@@ -690,20 +827,21 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
     if ($metadata === null) {
       if ($runner === null) logValidationFailure($url, $execution, microtime(true) - $startedAt);
       $result = validationFailureResult($execution);
+      $result['diagnosticStage'] = 'media_extractor';
+      $result['diagnosticDetail'] = sanitizedValidationError($execution['stderr'] ?? '');
+      $result['exitCode'] = (int)($execution['exitCode'] ?? 1);
+      $result['timedOut'] = !empty($execution['timedOut']);
     }
     else {
-      $extractor = $redditMedia === null ? $metadata['extractor'] : 'Reddit';
+      $extractor = $metadata['extractor'];
       $extractorName = formatExtractorName($extractor);
       $result = [
         'valid' => true,
         'message' => $extractorName === 'this media service' ? 'Verified media link.' : 'Verified ' . $extractorName . ' link.',
         'extractor' => $extractor,
-        'sourceTitle' => normalizedOutputTitle($redditMedia === null ? $metadata['sourceTitle'] : $redditMedia['sourceTitle']),
-        'isPlaylist' => $redditMedia === null && !empty($metadata['isPlaylist'])
+        'sourceTitle' => normalizedOutputTitle($metadata['sourceTitle']),
+        'isPlaylist' => !empty($metadata['isPlaylist'])
       ];
-      if ($redditMedia !== null) {
-        $result['downloadUrl'] = $redditMedia['downloadUrl'];
-      }
     }
 
     if ($useCache) writeUrlValidationCache($url, $result);
@@ -764,7 +902,19 @@ function enqueueDownloads($rawItems, $ownerId = null) {
   $validationErrors = [];
   foreach ($normalized['items'] as $index => $item) {
     $cacheKey = hash('sha256', $item['url']);
-    if (!isset($validationResults[$cacheKey])) $validationResults[$cacheKey] = validateMediaUrl($item['url']);
+    if (!isset($validationResults[$cacheKey])) {
+      $startedAt = microtime(true);
+      recordUrlEvent($ownerId, 'queue_validation_requested', $item['url'], 'checking', 'Queue submission revalidation started.');
+      $validationResults[$cacheKey] = validateMediaUrl($item['url']);
+      recordUrlEvent(
+        $ownerId,
+        'queue_validation_completed',
+        $item['url'],
+        $validationResults[$cacheKey]['valid'] ? 'valid' : 'invalid',
+        $validationResults[$cacheKey]['message'] ?? 'Validation completed.',
+        validationDiagnosticDetails($validationResults[$cacheKey], (microtime(true) - $startedAt) * 1000)
+      );
+    }
     if (!$validationResults[$cacheKey]['valid']) {
       $validationErrors[] = 'URL ' . ($index + 1) . ': ' . $validationResults[$cacheKey]['message'];
     }
@@ -1376,10 +1526,10 @@ function purgeExpiredContent($now = null) {
   $lock = @fopen(CLEANUP_LOCK, 'c');
   if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
     if (is_resource($lock)) fclose($lock);
-    return ['files' => 0, 'jobs' => 0, 'cache' => 0, 'work' => 0];
+    return ['files' => 0, 'jobs' => 0, 'cache' => 0, 'urlEvents' => 0, 'work' => 0];
   }
 
-  $removed = ['files' => 0, 'jobs' => 0, 'cache' => 0, 'work' => 0];
+  $removed = ['files' => 0, 'jobs' => 0, 'cache' => 0, 'urlEvents' => 0, 'work' => 0];
   $knownStorageNames = [];
   $fileRows = database()->query('SELECT id, record_json FROM files')->fetchAll();
   $deleteFileRecord = database()->prepare('DELETE FROM files WHERE id = :id');
@@ -1407,6 +1557,9 @@ function purgeExpiredContent($now = null) {
   $deleteCache = database()->prepare('DELETE FROM validation_cache WHERE created_at <= :cutoff');
   $deleteCache->execute([':cutoff' => $cutoff]);
   $removed['cache'] = $deleteCache->rowCount();
+  $deleteUrlEvents = database()->prepare('DELETE FROM url_events WHERE created_at <= :cutoff');
+  $deleteUrlEvents->execute([':cutoff' => $now - URL_EVENT_RETENTION_SECONDS]);
+  $removed['urlEvents'] = $deleteUrlEvents->rowCount();
   foreach (glob(WORK_DIR . '/*', GLOB_ONLYDIR) ?: [] as $path) {
     if (filemtime($path) <= $cutoff) {
       cleanupWorkDir($path);
@@ -1434,6 +1587,13 @@ function sendJsonResponse($status, $message, $additionalData = []) {
   echo json_encode(array_merge(['status' => $status, 'message' => $message], $additionalData));
 }
 
+function appBuildInfo() {
+  $version = preg_match('/^[A-Za-z0-9._-]{1,40}$/', APP_VERSION) ? APP_VERSION : 'unknown';
+  $commit = preg_match('/^[a-f0-9]{7,40}$/i', APP_COMMIT) ? strtolower(APP_COMMIT) : 'unknown';
+  $updatedAt = preg_match('/^\d{4}-\d{2}-\d{2}$/', APP_UPDATED_AT) ? APP_UPDATED_AT : 'unknown';
+  return ['version' => $version, 'commit' => $commit, 'updatedAt' => $updatedAt];
+}
+
 if (defined('DOWNLOADER_LIBRARY_ONLY')) return;
 
 if (PHP_SAPI === 'cli') {
@@ -1442,6 +1602,10 @@ if (PHP_SAPI === 'cli') {
   if ($command === 'run-job' && isset($argv[2])) exit(runJob($argv[2]));
   if ($command === 'cleanup') {
     echo json_encode(purgeExpiredContent()) . "\n";
+    exit(0);
+  }
+  if ($command === 'validation-log') {
+    foreach (listUrlEvents($argv[2] ?? 100) as $event) echo json_encode($event, JSON_UNESCAPED_SLASHES) . "\n";
     exit(0);
   }
   fwrite(STDERR, "Unsupported CLI command.\n");
@@ -1458,13 +1622,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     sendJsonResponse($published ? 0 : 2, $published ? 'File is public for the next 72 hours.' : 'That private file was not found.');
   }
   elseif (isset($_POST['validateUrl'])) {
+    $ownerId = getCurrentVisitorId(true);
+    $requestId = $_POST['requestId'] ?? null;
+    $startedAt = microtime(true);
+    recordUrlEvent($ownerId, 'validation_requested', $_POST['validateUrl'], 'checking', 'URL validation started.', [], $requestId);
     $validation = validateMediaUrl($_POST['validateUrl']);
+    recordUrlEvent(
+      $ownerId,
+      'validation_completed',
+      $_POST['validateUrl'],
+      $validation['valid'] ? 'valid' : 'invalid',
+      $validation['message'],
+      validationDiagnosticDetails($validation, (microtime(true) - $startedAt) * 1000),
+      $requestId
+    );
     sendJsonResponse($validation['valid'] ? 0 : 2, $validation['message'], [
       'valid' => $validation['valid'],
       'title' => $validation['sourceTitle'] ?? null,
       'source' => $validation['extractor'] ?? null,
       'isPlaylist' => !empty($validation['isPlaylist'])
     ]);
+  }
+  elseif (isset($_POST['urlEvent'])) {
+    $allowedEvents = ['field_focus', 'field_blur', 'field_paste', 'field_changed', 'field_removed', 'edit_started', 'status_selected', 'status_recorded'];
+    $eventType = strtolower(trim((string)$_POST['urlEvent']));
+    if (!in_array($eventType, $allowedEvents, true)) {
+      sendJsonResponse(2, 'Invalid URL event.');
+    }
+    else {
+      recordUrlEvent(
+        getCurrentVisitorId(true),
+        $eventType,
+        $_POST['url'] ?? null,
+        $_POST['validationState'] ?? null,
+        $_POST['message'] ?? null,
+        ['trigger' => $_POST['trigger'] ?? null],
+        $_POST['requestId'] ?? null
+      );
+      sendJsonResponse(0, 'URL event recorded.');
+    }
   }
   elseif (isset($_POST['queue'])) { enqueueDownloads($_POST['queue']); }
   elseif (isset($_POST['download'])) { enqueueDownloads(legacyQueueItem()); }
@@ -1474,6 +1670,7 @@ elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['media'])) { serveMe
 elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['refresh']) && $_GET['refresh'] === 'downloads') { listDownloads(); }
 elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['jobs'])) { sendJobsStatus($_GET['jobs'], getCurrentVisitorId()); }
 elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['job'])) { sendJobStatus($_GET['job'], getCurrentVisitorId()); }
+elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['version'])) { sendJsonResponse(0, 'Build information loaded.', appBuildInfo()); }
 else { sendJsonResponse(2, 'Unsupported Request Method.'); }
 
 ?>

@@ -37,7 +37,7 @@ checkFrontend(str_contains($css, '.icons .fa-dailymotion::after') && str_contain
 checkFrontend(str_contains($css, 'height: 1.8rem;') && str_contains($css, 'width: 1.8rem;'), 'The Facebook white background size is incorrect.');
 
 checkFrontend(!str_contains(strtolower($html), 'yt-dlp'), 'A public-facing implementation name remains in the page.');
-checkFrontend(str_contains($html, 'style.css?v=20261016-process-log'), 'The redesigned stylesheet is not cache-busted.');
+checkFrontend(str_contains($html, 'style.css?v=20261022-observability'), 'The current stylesheet is not cache-busted.');
 checkFrontend((bool)preg_match('/\.icons-featured\s*\{[^}]*background:\s*transparent;/s', $css), 'The featured icon strip still has a background.');
 checkFrontend(str_contains($css, '.icons-featured .fa-youtube,') && str_contains($css, '.icons-featured .fa-dailymotion { overflow: hidden }'), 'Featured brand-icon background layers are not clipped inside their glyph boxes.');
 checkFrontend((bool)preg_match('/\.icons-featured \.fa-facebook::after\s*\{[^}]*left:\s*5px;[^}]*height:\s*1\.7rem;[^}]*width:\s*1\.7rem;/s', $css), 'The featured Facebook backing is not safely inset.');
@@ -63,7 +63,12 @@ checkFrontend(str_contains($html, 'sourceTitle: json.title') && str_contains($ht
 checkFrontend(str_contains($html, "$('#queueRows').on('paste', '.queue-url'"), 'Pasted URLs are not checked immediately.');
 checkFrontend(str_contains($html, ".prop('readonly', keepReadonly || state === 'checking' || state === 'valid')"), 'The URL is not locked while checking, after verification, or during a duplicate-output error.');
 checkFrontend(str_contains($html, "state === 'valid' ? accessibleMessage + ' Click to edit this URL.'"), 'The verified state does not explain how to edit the locked URL.');
-checkFrontend(str_contains($html, "$.post('/system/ajax.php', { validateUrl: url })"), 'Authoritative URL verification is missing.');
+checkFrontend(str_contains($html, "$.post('/system/ajax.php', { validateUrl: url, requestId:"), 'Authoritative URL verification is missing or lacks diagnostic correlation.');
+checkFrontend(str_contains($html, "\$input.data('validatedUrl') === url && (priorState === 'valid' || priorState === 'invalid')") && str_contains($html, "setUrlValidation(\$input, priorState, \$input.data('validationMessage')"), 'An unchanged URL status is not restored without revalidation on blur.');
+checkFrontend(str_contains($html, "['valid', 'invalid'].indexOf(\$input.data('validationState')) !== -1"), 'Previously returned URL statuses are not reused when the value is unchanged.');
+checkFrontend(!str_contains($html, "resetUrlValidation(\$input);\n    \$input.prop('readonly', false).focus().select();"), 'Selecting a verified URL still clears its validation before the user changes it.');
+checkFrontend(str_contains($html, "'field_focus'") && str_contains($html, "logUrlInteraction(\$input, 'field_blur'") && str_contains($html, "logUrlInteraction(\$input, 'field_paste'") && str_contains($html, "logUrlInteraction(\$input, 'field_changed'") && str_contains($html, "logUrlInteraction(\$input, 'field_removed'"), 'URL field interactions are not comprehensively recorded.');
+checkFrontend(str_contains($html, "logUrlInteraction(\$input, 'status_recorded'") && str_contains($html, 'navigator.sendBeacon'), 'Client URL statuses are not recorded without disturbing the UI.');
 checkFrontend(str_contains($html, "url === '' || \$input.data('validationState') !== 'valid'"), 'Empty and unverified rows do not block processing.');
 checkFrontend(str_contains($html, "\$input.data('validationState') === 'valid' && !confirm"), 'Only verified queue rows should require removal confirmation.');
 
@@ -81,6 +86,8 @@ checkFrontend(str_contains($html, "job.state === 'complete' ? 'Completed'") && s
 checkFrontend(str_contains($html, "base: 'Original'") && str_contains($html, "['base', 'Original']"), 'The original-media choice is not consistently named Original.');
 checkFrontend(!str_contains($html, '>Base:</span>'), 'The obsolete Base label remains in the help content.');
 checkFrontend(str_contains($html, 'if (outputHideTimer !== null) clearTimeout(outputHideTimer);') && str_contains($html, '}, 10000);'), 'Output messages do not reset and auto-hide after ten seconds.');
+checkFrontend(str_contains($html, 'id="buildInfo"') && str_contains($html, "$.get('/system/ajax.php', { version: 1 })"), 'The Help dialog does not show live version, commit, and update metadata.');
+checkFrontend(str_contains($css, '.help-heading') && str_contains($css, '#buildInfo'), 'Help build metadata is not styled beside its heading.');
 checkFrontend(str_contains($html, '>Save</span> beside a file to download it to your device.'), 'Help does not distinguish processing from saving.');
 checkFrontend(str_contains($html, 'id="copyTranscript"'), 'Transcript playback is missing its copy action.');
 checkFrontend(str_contains($html, 'navigator.clipboard.writeText(text)'), 'Transcript copying does not use the Clipboard API.');
@@ -101,10 +108,13 @@ checkFrontend(str_contains($dockerfile, '<Directory "/data">') && str_contains($
 checkFrontend(str_contains($dockerfile, 'COPY --from=pot-provider') && str_contains($dockerfile, 'transcriber/server.py /opt/transcriber/server.py'), 'The token provider and transcriber are not included in the application image.');
 checkFrontend(str_contains($dockerfile, 'new PDO("sqlite::memory:")'), 'The image does not verify SQLite support while building.');
 checkFrontend(str_contains($dockerfile, 'CMD ["start-downloader"]'), 'The supervised container command is missing.');
+checkFrontend(str_contains($dockerfile, 'find /var/www/html -type d -exec chmod 0755') && str_contains($dockerfile, 'find /var/www/html -type f -exec chmod 0644'), 'The image does not normalize Apache web-root permissions.');
+checkFrontend(str_contains($dockerfile, 'ARG APP_COMMIT') && str_contains($dockerfile, 'APP_UPDATED_AT=${APP_UPDATED_AT}'), 'Build version metadata is not baked into the runtime image.');
 checkFrontend(str_contains($entrypoint, 'DOWNLOADER_DATA_DIR:-/data') && str_contains($entrypoint, 'app.sqlite'), 'The named-volume data layout is not initialized.');
 checkFrontend(str_contains($supervisor, '"token provider"') && str_contains($supervisor, '"transcriber"') && str_contains($supervisor, '"Apache"'), 'The required processes are not supervised together.');
 checkFrontend(str_contains($cleanupLoop, 'php /var/www/html/system/ajax.php cleanup') && str_contains($cleanupLoop, 'DOWNLOADER_CLEANUP_INTERVAL_SECONDS:-900'), 'The periodic retention cleanup is missing.');
 checkFrontend(str_contains($compose, 'downloader-data:/data') && str_contains($compose, "\nvolumes:\n  downloader-data:"), 'Compose does not use one Docker-managed data volume.');
+checkFrontend(str_contains($compose, 'APP_COMMIT: ${APP_COMMIT:-unknown}') && str_contains($compose, 'APP_UPDATED_AT: ${APP_UPDATED_AT:-2026-10-22}'), 'Compose does not expose build metadata arguments.');
 checkFrontend(!str_contains($compose, './app:') && !str_contains($compose, './temp:') && !str_contains($compose, './download:'), 'Compose still depends on host-path bind mounts.');
 checkFrontend(substr_count($compose, "\n  downloader:") === 1 && !str_contains($compose, 'downloader-transcriber:') && !str_contains($compose, 'downloader-pot-provider:'), 'Compose still defines multiple application services.');
 

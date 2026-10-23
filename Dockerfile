@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 ARG WHISPER_MODEL=small
+ARG APP_VERSION=2026.10.22
+ARG APP_COMMIT=unknown
+ARG APP_UPDATED_AT=2026-10-22
 
 FROM brainicism/bgutil-ytdlp-pot-provider:1.3.2-deno@sha256:20bd6ad8561d71c628fb3d4fe35a7fcd2c9ef84eecd2bbf40f77dd0d8a8e3799 AS pot-provider
 
@@ -103,9 +106,22 @@ RUN python -c "import os; from faster_whisper import WhisperModel; WhisperModel(
 
 FROM whisper-model AS runtime
 
+ARG APP_VERSION
+ARG APP_COMMIT
+ARG APP_UPDATED_AT
+
 COPY --from=runtime-files / /
 
-ENV DOWNLOADER_DATA_DIR=/data \
+# Normalize web permissions so image behavior does not depend on the checkout's
+# umask or executable bits. Apache only needs directories traversable and files
+# readable; runtime data remains isolated under /data.
+RUN find /var/www/html -type d -exec chmod 0755 {} + && \
+    find /var/www/html -type f -exec chmod 0644 {} +
+
+ENV APP_VERSION=${APP_VERSION} \
+    APP_COMMIT=${APP_COMMIT} \
+    APP_UPDATED_AT=${APP_UPDATED_AT} \
+    DOWNLOADER_DATA_DIR=/data \
     DOWNLOADER_DATABASE_PATH=/data/app.sqlite \
     DOWNLOADER_TEMP_DIR=/data/temp \
     DOWNLOADER_FINAL_DIR=/data/downloads \

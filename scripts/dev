@@ -7,6 +7,11 @@ cd "$repo_root"
 app_image=awesome-downloader:latest
 test_image=awesome-downloader-test:latest
 whisper_model=${WHISPER_MODEL:-small}
+app_version=${APP_VERSION:-2026.10.22}
+app_commit=${APP_COMMIT:-}
+app_updated_at=${APP_UPDATED_AT:-}
+if [ -z "$app_commit" ]; then app_commit=$(git rev-parse --short=12 HEAD 2>/dev/null || printf '%s' unknown); fi
+if [ -z "$app_updated_at" ]; then app_updated_at=$(git log -1 --format=%cs HEAD 2>/dev/null || printf '%s' 2026-10-22); fi
 
 usage() {
   cat <<'EOF'
@@ -24,6 +29,9 @@ Commands:
 
 Environment:
   WHISPER_MODEL     Whisper model baked into the image (default: small).
+  APP_VERSION       Version shown in Help (default: 2026.10.22).
+  APP_COMMIT        Commit shown in Help (default: current Git commit).
+  APP_UPDATED_AT    Last-updated date shown in Help (default: commit date).
   DOWNLOADER_PORT   Host HTTP port used by Compose (default: 8080).
   EXTRA_CA_CERT     Optional path to an additional trusted PEM certificate.
   START_TIMEOUT     Health wait timeout in seconds (default: 360).
@@ -61,9 +69,9 @@ docker_build() {
       echo "The configured extra CA certificate is not readable." >&2
       exit 1
     fi
-    docker build --secret "id=extra_ca,src=$extra_ca" "$@"
+    docker build --build-arg "APP_VERSION=$app_version" --build-arg "APP_COMMIT=$app_commit" --build-arg "APP_UPDATED_AT=$app_updated_at" --secret "id=extra_ca,src=$extra_ca" "$@"
   else
-    docker build "$@"
+    docker build --build-arg "APP_VERSION=$app_version" --build-arg "APP_COMMIT=$app_commit" --build-arg "APP_UPDATED_AT=$app_updated_at" "$@"
   fi
 }
 
@@ -110,7 +118,7 @@ smoke() {
   docker compose exec -T downloader curl -fsS http://127.0.0.1:8000/health >/dev/null
   docker compose exec -T downloader test -f /data/app.sqlite
   docker compose exec -T downloader php -r \
-    '$db = new PDO("sqlite:/data/app.sqlite"); $count = $db->query("SELECT count(*) FROM sqlite_master WHERE type=\"table\" AND name IN (\"jobs\",\"files\",\"validation_cache\")")->fetchColumn(); exit((int)$count === 3 ? 0 : 1);'
+    '$db = new PDO("sqlite:/data/app.sqlite"); $count = $db->query("SELECT count(*) FROM sqlite_master WHERE type=\"table\" AND name IN (\"jobs\",\"files\",\"validation_cache\",\"url_events\")")->fetchColumn(); exit((int)$count === 4 ? 0 : 1);'
 
   echo "Smoke checks passed (web app, token provider, local Whisper, and SQLite)."
 }

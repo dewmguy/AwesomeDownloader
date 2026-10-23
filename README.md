@@ -89,6 +89,9 @@ services:
       context: .
       args:
         WHISPER_MODEL: ${WHISPER_MODEL:-small}
+        APP_VERSION: ${APP_VERSION:-2026.10.22}
+        APP_COMMIT: ${APP_COMMIT:-unknown}
+        APP_UPDATED_AT: ${APP_UPDATED_AT:-2026-10-22}
     image: awesome-downloader:latest
     container_name: awesome-downloader
     ports:
@@ -137,7 +140,7 @@ The `downloader-data` named volume is mounted at `/data`:
 
 | Path | Purpose |
 | --- | --- |
-| `/data/app.sqlite` | jobs, file metadata, and validation cache |
+| `/data/app.sqlite` | jobs, file metadata, validation cache, and URL diagnostic events |
 | `/data/downloads` | completed media awaiting expiry or user download |
 | `/data/temp/work` | in-progress downloads and conversions |
 | `/data/locks` | queue, cleanup, and validation coordination |
@@ -243,6 +246,9 @@ Set these in `compose.yaml` or in a Compose override:
 | --- | --- | --- |
 | `DOWNLOADER_PORT` | `8080` | host port mapped to the container |
 | `WHISPER_MODEL` | `small` | model baked into the image and used at runtime |
+| `APP_VERSION` | `2026.10.22` | release label shown in the Help dialog |
+| `APP_COMMIT` | current Git commit with `scripts/dev`; otherwise `unknown` | source revision shown in Help |
+| `APP_UPDATED_AT` | current commit date with `scripts/dev`; otherwise `2026-10-22` | last-updated date shown in Help |
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU inference quantization |
 | `WHISPER_THREADS` | `3` | transcription CPU threads |
 | `DOWNLOADER_GIF_MAX_SECONDS` | `600` | longest accepted GIF source |
@@ -301,8 +307,23 @@ source policy rather than a container failure. Failed and transient URL
 validations are not cached, so they can be retried immediately.
 
 Canonical public Reddit posts containing native `v.redd.it` video use Reddit's
-public embed metadata as a fallback and do not require account cookies. Private,
+public embed metadata and verify the native HLS manifest directly; they do not
+depend on Reddit's generic extractor path or require account cookies. Private,
 deleted, non-video, and unsupported Reddit posts can still be unavailable.
+
+URL-field interactions, attempted URLs, validation statuses, user-facing
+errors, timing, source, and resolved title are retained in the protected SQLite
+volume for 72 hours. This is intended for diagnosing intermittent source-site
+failures. Review the newest records from inside the container:
+
+```bash
+docker compose exec -T downloader php /var/www/html/system/ajax.php validation-log 100
+```
+
+The output is JSON Lines, newest first. URLs can contain private path or query
+information, so handle this diagnostic output and volume backups as sensitive
+data. The browser never exposes this history; it is available only through the
+container CLI and is removed by the same periodic retention cleanup as jobs.
 
 ## Security and expected limits
 

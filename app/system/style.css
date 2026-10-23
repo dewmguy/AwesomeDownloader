@@ -87,6 +87,22 @@ body {
   overflow-y: auto;
   z-index: 4;
 }
+.help-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.help-heading h2 { margin: 0 }
+#buildInfo {
+  flex: 0 0 auto;
+  color: rgba(255,255,255,.68);
+  font-family: "SFMedium", sans-serif;
+  font-size: .72rem;
+  letter-spacing: .025em;
+  text-align: right;
+  white-space: nowrap;
+}
 
 form {
   display: flex;
@@ -863,6 +879,8 @@ label.container {
     max-height: 95vh;
     overflow-y: auto;
   }
+  .help-heading { align-items: flex-start; flex-direction: column; gap: .25rem }
+  #buildInfo { text-align: left; white-space: normal }
   #helpcloser { left: unset; right: 0; position: fixed }
   .box { padding: 2rem }
   .queue-row { grid-template-columns: minmax(0, 1fr) 2.5rem }

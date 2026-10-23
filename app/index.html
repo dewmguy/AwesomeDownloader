@@ -6,7 +6,7 @@
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
 <meta content="utf-8" http-equiv="encoding">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link type="text/css" href="system/style.css?v=20261016-process-log" rel="stylesheet" />
+<link type="text/css" href="system/style.css?v=20261022-observability" rel="stylesheet" />
 <link rel="apple-touch-icon" sizes="57x57" href="/system/favicon/apple-icon-57x57.png" />
 <link rel="apple-touch-icon" sizes="60x60" href="/system/favicon/apple-icon-60x60.png" />
 <link rel="apple-touch-icon" sizes="72x72" href="/system/favicon/apple-icon-72x72.png" />
@@ -43,8 +43,36 @@ var downloadsLoaded = false;
 var outputHideTimer = null;
 
 refreshDownloads();
+loadBuildInfo();
 $("#help,#player,#activeQueue").hide();
 addQueueRow();
+
+function loadBuildInfo() {
+  $.get('/system/ajax.php', { version: 1 }).done(function(response) {
+    var json;
+    try { json = typeof response === 'string' ? jQuery.parseJSON(response) : response; }
+    catch (error) { return; }
+    if (!json || json.status !== 0) return;
+    var parts = ['v' + json.version];
+    if (json.commit && json.commit !== 'unknown') parts.push(json.commit.substring(0, 12));
+    if (json.updatedAt && json.updatedAt !== 'unknown') parts.push('updated ' + json.updatedAt);
+    $('#buildInfo').text(parts.join(' · ')).attr('title', 'Application build ' + parts.join(', '));
+  });
+}
+
+function logUrlInteraction($input, eventType, options) {
+  if (!$input || !$input.length) return;
+  options = options || {};
+  var formData = new FormData();
+  formData.append('urlEvent', eventType);
+  formData.append('requestId', $input.data('requestId') || 'unknown');
+  formData.append('url', $input.val() || '');
+  formData.append('validationState', options.state || $input.data('validationState') || 'idle');
+  formData.append('message', options.message || $input.data('validationMessage') || '');
+  formData.append('trigger', options.trigger || 'browser');
+  if (navigator.sendBeacon && navigator.sendBeacon('/system/ajax.php', formData)) return;
+  if (window.fetch) fetch('/system/ajax.php', { method: 'POST', body: formData, credentials: 'same-origin', keepalive: true }).catch(function() {});
+}
 
 $('#loader').on('click', function() { watchfulEye = !watchfulEye; });
 
@@ -206,6 +234,7 @@ $('#queueRows').on('click', '.remove-url', function() {
   var $row = $(this).closest('.queue-row');
   var $input = $row.find('.queue-url');
   if ($input.data('validationState') === 'valid' && !confirm('Remove this verified URL from the processing queue?')) return;
+  logUrlInteraction($input, 'field_removed', { trigger: 'remove' });
   var request = $input.data('validationRequest');
   if (request) request.abort();
   $row.remove();
@@ -273,27 +302,55 @@ $('#queueRows').on('input', '.queue-url', function() {
   var $input = $(this);
   var request = $input.data('validationRequest');
   if (request) request.abort();
+  if (!$input.data('changeLogged')) {
+    logUrlInteraction($input, 'field_changed', { trigger: 'input' });
+    $input.data('changeLogged', true);
+  }
   resetUrlValidation($input);
   updateQueueControls();
+});
+
+$('#queueRows').on('focus', '.queue-url', function() {
+  $(this).removeData('changeLogged');
+  logUrlInteraction($(this), 'field_focus', { trigger: 'focus' });
 });
 
 $('#queueRows').on('paste', '.queue-url', function() {
   var input = this;
   setTimeout(function() {
-    if ($(input).val().trim() !== '') validateQueueUrl($(input));
+    var $input = $(input);
+    logUrlInteraction($input, 'field_paste', { trigger: 'paste' });
+    if ($input.val().trim() !== '') validateQueueUrl($input);
   }, 0);
 });
 
 $('#queueRows').on('blur', '.queue-url', function() {
-  if ($(this).val().trim() !== '') validateQueueUrl($(this));
+  var $input = $(this);
+  var url = $input.val().trim();
+  logUrlInteraction($input, 'field_blur', { trigger: 'blur' });
+  $input.removeData('changeLogged');
+  if (url === '') {
+    resetUrlValidation($input);
+    return;
+  }
+  var priorState = $input.data('validationState');
+  if ($input.data('validatedUrl') === url && (priorState === 'valid' || priorState === 'invalid')) {
+    $input.prop('readonly', priorState === 'valid').removeData('editingValidatedUrl');
+    setUrlValidation($input, priorState, $input.data('validationMessage') || (priorState === 'valid' ? 'Verified media link.' : 'This URL is not supported.'));
+    updateQueueControls();
+    return;
+  }
+  validateQueueUrl($input);
 });
 
 $('#queueRows').on('click', '.url-status, .verified-media', function() {
   var $input = $(this).closest('.url-field-shell').find('.queue-url');
+  logUrlInteraction($input, 'status_selected', { trigger: $(this).hasClass('verified-media') ? 'media_summary' : 'status' });
   if ($input.data('sourceTitle') && $input.prop('readonly')) {
-    resetUrlValidation($input);
-    $input.prop('readonly', false).focus().select();
-    updateQueueControls();
+    logUrlInteraction($input, 'edit_started', { trigger: 'verified_url' });
+    $input.data('editingValidatedUrl', $input.data('validatedUrl'));
+    $(this).closest('.url-field-shell').find('.verified-media').prop('hidden', true);
+    $input.show().prop('readonly', false).focus().select();
   }
   else if (!$input.prop('readonly')) $input.focus();
 });
@@ -333,7 +390,7 @@ function addQueueRow(url, mode) {
   if ($('.queue-row').length >= maxQueueRows) return;
   queueRowCounter++;
   var $row = $('<div class="queue-row"></div>');
-  var $url = $('<input type="url" class="queue-url" inputmode="url" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048" enterkeyhint="done" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL" aria-invalid="false">').val(url || '');
+  var $url = $('<input type="url" class="queue-url" inputmode="url" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048" enterkeyhint="done" placeholder="Paste media or playlist URL" aria-label="Media or playlist URL" aria-invalid="false">').val(url || '').data('requestId', 'url-' + Date.now() + '-' + queueRowCounter);
   var $fieldShell = $('<div class="url-field-shell validation-idle"></div>');
   var $validation = $('<button type="button" class="url-status idle" aria-label="URL not verified" title="Paste a link to verify it"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span class="url-status-label" aria-hidden="true">Waiting</span><span class="visually-hidden" aria-live="polite">URL not verified</span></button>');
   var $verifiedMedia = $('<button type="button" class="verified-media" hidden></button>');
@@ -596,7 +653,7 @@ function setUrlValidation($input, state, message, options) {
   var $status = $shell.find('.url-status');
   var accessibleMessage = message || (state === 'idle' ? 'URL not verified' : 'URL status');
   var keepReadonly = options && options.keepReadonly === true;
-  if (state === 'valid') $input.data('validationMessage', accessibleMessage);
+  if (state === 'valid' || state === 'invalid') $input.data('validationMessage', accessibleMessage);
   $input.removeClass('brokenurl validurl checkingurl')
     .addClass(state === 'invalid' ? 'brokenurl' : state === 'valid' ? 'validurl' : state === 'checking' ? 'checkingurl' : '')
     .attr('aria-invalid', state === 'invalid' ? 'true' : 'false')
@@ -616,6 +673,11 @@ function setUrlValidation($input, state, message, options) {
   else {
     $shell.find('.verified-media').prop('hidden', true).empty();
     $input.show();
+  }
+  var statusLogKey = (state || 'idle') + '|' + accessibleMessage + '|' + $input.val();
+  if ($input.data('lastLoggedStatus') !== statusLogKey) {
+    $input.data('lastLoggedStatus', statusLogKey);
+    logUrlInteraction($input, 'status_recorded', { state: state || 'idle', message: accessibleMessage, trigger: 'ui' });
   }
 }
 
@@ -642,8 +704,11 @@ function validateQueueUrl($input) {
     return resolvedValidation(shape);
   }
 
-  if ($input.data('validatedUrl') === url && $input.data('validationState') === 'valid') {
-    return resolvedValidation({ valid: true, message: $input.closest('.url-field-shell').find('.url-status').attr('aria-label') });
+  if ($input.data('validatedUrl') === url && ['valid', 'invalid'].indexOf($input.data('validationState')) !== -1) {
+    return resolvedValidation({
+      valid: $input.data('validationState') === 'valid',
+      message: $input.data('validationMessage') || $input.closest('.url-field-shell').find('.url-status').attr('aria-label')
+    });
   }
   if ($input.data('validatedUrl') === url && $input.data('validationPromise')) return $input.data('validationPromise');
 
@@ -653,7 +718,7 @@ function validateQueueUrl($input) {
   setUrlValidation($input, 'checking', 'Checking this link…');
   updateQueueControls();
 
-  var request = $.post('/system/ajax.php', { validateUrl: url })
+  var request = $.post('/system/ajax.php', { validateUrl: url, requestId: $input.data('requestId') || '' })
     .done(function(response) {
       if ($input.val().trim() !== url) {
         deferred.resolve({ valid: false, stale: true });
@@ -881,7 +946,10 @@ function showOutput(message, className) {
 <div id="help">
 <div class="helpcontainer">
 <button type="button" id="helpcloser" aria-label="Close help"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+<div class="help-heading">
 <h2>How to Use the Downloader</h2>
+<small id="buildInfo">v2026.10.22 · updated 2026-10-22</small>
+</div>
 <ol>
 <li>Paste a public media or playlist link. A green check means the link is verified; select the check to edit it.</li>
 <li>Choose each row's <span class="head">Converting to</span> format. Use <span class="head">Add URL</span> to process several links; a repeated link must use a different output.</li>
