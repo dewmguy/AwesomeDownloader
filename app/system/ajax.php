@@ -22,12 +22,12 @@ define('URL_VALIDATION_TIMEOUT', max(5, (int)(getenv('DOWNLOADER_URL_VALIDATION_
 define('URL_VALIDATION_CACHE_SECONDS', max(30, (int)(getenv('DOWNLOADER_URL_VALIDATION_CACHE_SECONDS') ?: 600)));
 define('URL_VALIDATION_CONCURRENCY', max(1, (int)(getenv('DOWNLOADER_URL_VALIDATION_CONCURRENCY') ?: 3)));
 define('URL_VALIDATION_LOCK_PARTITIONS', 256);
-define('URL_VALIDATION_CACHE_VERSION', 6);
+define('URL_VALIDATION_CACHE_VERSION', 7);
 define('URL_EVENT_RETENTION_SECONDS', 72 * 60 * 60);
 define('URL_EVENT_RATE_LIMIT', 500);
-define('APP_VERSION', getenv('APP_VERSION') ?: '2026.10.22');
+define('APP_VERSION', getenv('APP_VERSION') ?: '2026.10.23');
 define('APP_COMMIT', getenv('APP_COMMIT') ?: 'unknown');
-define('APP_UPDATED_AT', getenv('APP_UPDATED_AT') ?: '2026-10-22');
+define('APP_UPDATED_AT', getenv('APP_UPDATED_AT') ?: '2026-10-23');
 define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://127.0.0.1:8000', '/'));
 define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: TEMP_DIR, '/'));
 define('TRANSCRIPTION_TIMEOUT', (int)(getenv('DOWNLOADER_TRANSCRIPTION_TIMEOUT') ?: 14400));
@@ -508,73 +508,75 @@ function validatePublicUrlTarget($url, $resolver = null) {
   return $structure;
 }
 
-function redditEmbedUrl($url) {
+function redditPostDetails($url) {
   $parts = parse_url(trim((string)$url));
   if (!is_array($parts)) return null;
 
   $host = strtolower(rtrim((string)($parts['host'] ?? ''), '.'));
-  if (!in_array($host, ['reddit.com', 'www.reddit.com', 'old.reddit.com', 'new.reddit.com', 'embed.reddit.com'], true)) return null;
+  if (!in_array($host, ['reddit.com', 'www.reddit.com', 'old.reddit.com', 'new.reddit.com'], true)) return null;
 
   $path = (string)($parts['path'] ?? '');
-  if (!preg_match('~^/r/[a-z0-9_]+/comments/[a-z0-9]+(?:/[a-z0-9_-]*)?/?$~i', $path)) return null;
-  return 'https://embed.reddit.com' . rtrim($path, '/') . '/';
-}
+  if (!preg_match('~^/r/[a-z0-9_]+/comments/([a-z0-9]+)(?:/([a-z0-9_-]*))?/?$~i', $path, $matches)) return null;
 
-function parseRedditEmbedVideo($html) {
-  if (!is_string($html) || $html === '' || strlen($html) > 2 * 1024 * 1024) return null;
-  if (!preg_match('~<shreddit-screenview-data\b[^>]*\bdata="([^"]+)"~is', $html, $contextMatch)) return null;
-  $context = json_decode(html_entity_decode($contextMatch[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'), true);
-  $post = is_array($context) && isset($context['post']) && is_array($context['post']) ? $context['post'] : null;
-  if ($post === null || strtolower((string)($post['type'] ?? '')) !== 'video') return null;
-  if (!preg_match('~^https://v\.redd\.it/([a-z0-9]+)/?$~i', (string)($post['url'] ?? ''), $mediaMatch)) return null;
-
-  $decoded = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-  $title = 'Reddit video';
-  if (preg_match('~<a[^>]+id=["\']embed-title["\'][^>]*>.*?<h1[^>]*>(.*?)</h1>~is', $decoded, $titleMatch)) {
-    $candidate = preg_replace('/\s+/u', ' ', trim(strip_tags($titleMatch[1])));
-    if (is_string($candidate) && $candidate !== '') $title = $candidate;
-  }
+  $postId = strtolower($matches[1]);
+  $slug = rawurldecode((string)($matches[2] ?? ''));
+  $title = preg_replace('/\s+/u', ' ', trim(str_replace(['-', '_'], ' ', $slug)));
+  if (!is_string($title) || $title === '') $title = 'Reddit video ' . $postId;
+  else $title = ucfirst($title);
 
   return [
-    'downloadUrl' => 'https://v.redd.it/' . strtolower($mediaMatch[1]) . '/HLSPlaylist.m3u8',
+    'postId' => $postId,
+    'mediaEmbedUrl' => 'https://www.redditmedia.com/mediaembed/' . $postId,
     'sourceTitle' => $title
   ];
 }
 
-function resolveRedditVideo($url, $resolver = null, $fetcher = null) {
-  $embedUrl = redditEmbedUrl($url);
-  if ($embedUrl === null) return null;
+function parseRedditMediaEmbedVideo($html, $sourceTitle) {
+  if (!is_string($html) || $html === '' || strlen($html) > 512 * 1024) return null;
+  if (!preg_match('~\bdata-hls-url="([^"]+)"~i', $html, $mediaMatch)) return null;
+  $hlsUrl = html_entity_decode($mediaMatch[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+  if (!preg_match('~^https://v\.redd\.it/([a-z0-9]+)/HLSPlaylist\.m3u8(?:\?.*)?$~i', $hlsUrl, $pathMatch)) return null;
+  return [
+    'downloadUrl' => 'https://v.redd.it/' . strtolower($pathMatch[1]) . '/HLSPlaylist.m3u8',
+    'sourceTitle' => $sourceTitle
+  ];
+}
 
-  $embedTarget = validatePublicUrlTarget($embedUrl, $resolver);
+function resolveRedditVideo($url, $resolver = null, $fetcher = null) {
+  $post = redditPostDetails($url);
+  if ($post === null) return null;
+
+  $embedTarget = validatePublicUrlTarget($post['mediaEmbedUrl'], $resolver);
   if (!$embedTarget['valid']) return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.', [
-    'diagnosticStage' => 'reddit_embed_target',
-    'diagnosticDetail' => $embedTarget['message'] ?? 'Embed target rejected.'
+    'diagnosticStage' => 'reddit_media_embed_target',
+    'diagnosticDetail' => $embedTarget['message'] ?? 'Media embed target rejected.'
   ]);
 
   $timeout = min(15, URL_VALIDATION_TIMEOUT);
   $execution = $fetcher === null
     ? executeCommand([
       'curl', '--fail-with-body', '--silent', '--show-error', '--compressed',
-      '--max-time', (string)$timeout, '--max-filesize', (string)(2 * 1024 * 1024),
-      '--user-agent', 'Mozilla/5.0 (compatible; AwesomeDownloader/1.0)',
+      '--max-time', (string)$timeout, '--max-filesize', (string)(512 * 1024),
+      '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36',
+      '--header', 'Accept-Language: en-US,en;q=0.9',
       '--header', 'Accept: text/html', $embedTarget['url']
     ], $timeout + 1)
-    : $fetcher($embedTarget['url'], $timeout, 'embed');
+    : $fetcher($embedTarget['url'], $timeout, 'media_embed');
 
   if (!is_array($execution) || ($execution['exitCode'] ?? 1) !== 0) {
     if ($fetcher === null && is_array($execution)) logValidationFailure($url, $execution, 0);
     return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.', [
-      'diagnosticStage' => 'reddit_embed_fetch',
+      'diagnosticStage' => 'reddit_media_embed_fetch',
       'diagnosticDetail' => sanitizedValidationError($execution['stderr'] ?? ''),
       'exitCode' => (int)($execution['exitCode'] ?? 1),
       'timedOut' => !empty($execution['timedOut'])
     ]);
   }
 
-  $media = parseRedditEmbedVideo($execution['stdout'] ?? '');
+  $media = parseRedditMediaEmbedVideo($execution['stdout'] ?? '', $post['sourceTitle']);
   if ($media === null) return invalidUrlResult('This Reddit post does not expose a public native video.', [
-    'diagnosticStage' => 'reddit_embed_parse',
-    'diagnosticDetail' => 'No public native-video metadata was found in the embed response.'
+    'diagnosticStage' => 'reddit_media_embed_parse',
+    'diagnosticDetail' => 'No public native-video metadata was found in the media embed response.'
   ]);
 
   $mediaTarget = validatePublicUrlTarget($media['downloadUrl'], $resolver);
@@ -588,7 +590,7 @@ function resolveRedditVideo($url, $resolver = null, $fetcher = null) {
     ? executeCommand([
       'curl', '--fail-with-body', '--silent', '--show-error', '--compressed',
       '--max-time', (string)$timeout, '--max-filesize', (string)(256 * 1024),
-      '--user-agent', 'Mozilla/5.0 (compatible; AwesomeDownloader/1.0)',
+      '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36',
       '--header', 'Accept: application/vnd.apple.mpegurl', $mediaTarget['url']
     ], $timeout + 1)
     : $fetcher($mediaTarget['url'], $timeout, 'manifest');
@@ -767,7 +769,11 @@ function validationDiagnosticDetails($validation, $durationMs) {
 }
 
 function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = true, $redditFetcher = null) {
-  $target = validatePublicUrlTarget($url, $resolver);
+  $structure = validateUrlStructure($url);
+  if (!$structure['valid']) return $structure;
+  $target = redditPostDetails($structure['url']) === null
+    ? validatePublicUrlTarget($structure['url'], $resolver)
+    : $structure;
   if (!$target['valid']) return $target;
   $url = $target['url'];
 

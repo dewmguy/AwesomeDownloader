@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 ARG WHISPER_MODEL=small
-ARG APP_VERSION=2026.10.22
+ARG APP_VERSION=2026.10.23
 ARG APP_COMMIT=unknown
-ARG APP_UPDATED_AT=2026-10-22
+ARG APP_UPDATED_AT=2026-10-23
 
 FROM brainicism/bgutil-ytdlp-pot-provider:1.3.2-deno@sha256:20bd6ad8561d71c628fb3d4fe35a7fcd2c9ef84eecd2bbf40f77dd0d8a8e3799 AS pot-provider
 

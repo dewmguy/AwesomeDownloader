@@ -50,20 +50,18 @@ $unresolvedTarget = validatePublicUrlTarget('https://media.public-site.net/video
 check(!$unresolvedTarget['valid'], 'An unresolvable hostname was accepted.');
 
 $redditUrl = 'https://www.reddit.com/r/example/comments/abc123/a_public_video/';
-check(redditEmbedUrl($redditUrl) === 'https://embed.reddit.com/r/example/comments/abc123/a_public_video/', 'A canonical Reddit post URL did not map to its embed URL.');
-check(redditEmbedUrl('https://www.reddit.com/r/example/s/share-code') === null, 'An unsupported Reddit share URL was treated as a canonical post.');
-$redditEmbedHtml = <<<'HTML'
-<a id="embed-title" href="https://www.reddit.com/r/example/comments/abc123/a_public_video/">
-  <h1>A public / 100% video</h1>
-</a>
-<shreddit-screenview-data data="{&quot;post&quot;:{&quot;url&quot;:&quot;https://v.redd.it/media123&quot;,&quot;type&quot;:&quot;video&quot;}}"></shreddit-screenview-data>
+$redditPost = redditPostDetails($redditUrl);
+check(($redditPost['mediaEmbedUrl'] ?? '') === 'https://www.redditmedia.com/mediaembed/abc123', 'A canonical Reddit post URL did not map to its media embed URL.');
+check(($redditPost['sourceTitle'] ?? '') === 'A public video', 'The Reddit post slug was not converted to a usable title.');
+check(redditPostDetails('https://www.reddit.com/r/example/s/share-code') === null, 'An unsupported Reddit share URL was treated as a canonical post.');
+$redditMediaEmbedHtml = <<<'HTML'
+<div id="video-abc123" data-hls-url="https://v.redd.it/media123/HLSPlaylist.m3u8?a=signature&amp;v=1" data-link-url="https://v.redd.it/media123"></div>
 HTML;
-$parsedRedditVideo = parseRedditEmbedVideo($redditEmbedHtml);
-check(($parsedRedditVideo['downloadUrl'] ?? '') === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit embed video playlist was not extracted.');
-check(($parsedRedditVideo['sourceTitle'] ?? '') === 'A public / 100% video', 'The Reddit embed title was not extracted.');
-check(parseRedditEmbedVideo('<p>No native video</p>') === null, 'A Reddit embed without native video media was accepted.');
-check(parseRedditEmbedVideo('<shreddit-screenview-data data="{&quot;post&quot;:{&quot;url&quot;:&quot;https://v.redd.it/media123&quot;,&quot;type&quot;:&quot;link&quot;}}"></shreddit-screenview-data>') === null, 'A non-video Reddit post containing a media link was accepted.');
-check(parseRedditEmbedVideo('<shreddit-screenview-data data="{&quot;post&quot;:{&quot;url&quot;:&quot;https://v.redd.it.attacker.example/media123&quot;,&quot;type&quot;:&quot;video&quot;}}"></shreddit-screenview-data>') === null, 'A lookalike Reddit media hostname was accepted.');
+$parsedRedditVideo = parseRedditMediaEmbedVideo($redditMediaEmbedHtml, $redditPost['sourceTitle']);
+check(($parsedRedditVideo['downloadUrl'] ?? '') === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit media embed playlist was not extracted.');
+check(($parsedRedditVideo['sourceTitle'] ?? '') === 'A public video', 'The Reddit slug title was not retained with its video.');
+check(parseRedditMediaEmbedVideo('<p>No native video</p>', 'Example') === null, 'A Reddit media embed without native video was accepted.');
+check(parseRedditMediaEmbedVideo('<div data-hls-url="https://v.redd.it.attacker.example/media123/HLSPlaylist.m3u8"></div>', 'Example') === null, 'A lookalike Reddit media hostname was accepted.');
 
 $validationCommand = buildYtDlpValidationCommand('https://www.youtube.com/watch?v=test');
 check(in_array('--dump-single-json', $validationCommand, true) && in_array('--skip-download', $validationCommand, true), 'yt-dlp validation is not metadata-only.');
@@ -98,25 +96,30 @@ check($supported['valid'] && ($supported['extractor'] ?? '') === 'Example', 'A s
 check($runnerTimeout === URL_VALIDATION_TIMEOUT, 'The compatibility runner did not receive the validation timeout.');
 $redditRunnerCalled = false;
 $redditFetches = [];
+$redditResolvedHosts = [];
 $redditSupported = validateMediaUrl(
   $redditUrl,
-  fn($host) => ['8.8.8.8'],
+  function($host) use (&$redditResolvedHosts) {
+    $redditResolvedHosts[] = $host;
+    return ['8.8.8.8'];
+  },
   function($command, $timeout) use (&$redditRunnerCalled) {
     $redditRunnerCalled = true;
     return ['exitCode' => 1, 'stdout' => '', 'stderr' => 'Reddit must not use the generic probe.', 'timedOut' => false];
   },
   false,
-  function($fetchUrl, $timeout, $stage) use (&$redditFetches, $redditEmbedHtml) {
+  function($fetchUrl, $timeout, $stage) use (&$redditFetches, $redditMediaEmbedHtml) {
     $redditFetches[$stage] = $fetchUrl;
-    return ['exitCode' => 0, 'stdout' => $stage === 'embed' ? $redditEmbedHtml : "#EXTM3U\n#EXT-X-VERSION:3\n", 'stderr' => '', 'timedOut' => false];
+    return ['exitCode' => 0, 'stdout' => $stage === 'media_embed' ? $redditMediaEmbedHtml : "#EXTM3U\n#EXT-X-VERSION:3\n", 'stderr' => '', 'timedOut' => false];
   }
 );
-check($redditSupported['valid'] && ($redditSupported['extractor'] ?? '') === 'Reddit', 'A public native Reddit video failed embed fallback validation.');
-check(($redditFetches['embed'] ?? '') === redditEmbedUrl($redditUrl), 'The Reddit fallback fetched an unexpected endpoint.');
+check($redditSupported['valid'] && ($redditSupported['extractor'] ?? '') === 'Reddit', 'A public native Reddit video failed media-embed validation.');
+check(($redditFetches['media_embed'] ?? '') === $redditPost['mediaEmbedUrl'], 'The Reddit resolver fetched an unexpected endpoint.');
 check(($redditFetches['manifest'] ?? '') === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit fallback did not verify the resolved media playlist.');
+check(!in_array('www.reddit.com', $redditResolvedHosts, true) && in_array('www.redditmedia.com', $redditResolvedHosts, true) && in_array('v.redd.it', $redditResolvedHosts, true), 'Reddit validation resolved a submitted host it never contacts or skipped a contacted host.');
 check(!$redditRunnerCalled, 'Reddit validation still performs the slower generic extractor probe.');
 check(($redditSupported['downloadUrl'] ?? '') === ($redditFetches['manifest'] ?? null), 'The validated Reddit media URL was not retained for processing.');
-check(($redditSupported['sourceTitle'] ?? '') === 'A public 100% video', 'The validated Reddit title was not normalized to its saved filename.');
+check(($redditSupported['sourceTitle'] ?? '') === 'A public video', 'The validated Reddit title was not normalized to its saved filename.');
 $redditNoVideo = resolveRedditVideo(
   $redditUrl,
   fn($host) => ['8.8.8.8'],
@@ -126,7 +129,7 @@ check(!$redditNoVideo['valid'] && str_contains($redditNoVideo['message'], 'nativ
 $redditBrokenManifest = resolveRedditVideo(
   $redditUrl,
   fn($host) => ['8.8.8.8'],
-  fn($fetchUrl, $timeout, $stage) => ['exitCode' => 0, 'stdout' => $stage === 'embed' ? $redditEmbedHtml : '<html>not media</html>', 'stderr' => '', 'timedOut' => false]
+  fn($fetchUrl, $timeout, $stage) => ['exitCode' => 0, 'stdout' => $stage === 'media_embed' ? $redditMediaEmbedHtml : '<html>not media</html>', 'stderr' => '', 'timedOut' => false]
 );
 check(!$redditBrokenManifest['valid'] && str_contains($redditBrokenManifest['message'], 'media stream'), 'An invalid Reddit HLS manifest was accepted or explained unclearly.');
 check(($redditBrokenManifest['diagnosticStage'] ?? '') === 'reddit_manifest_fetch', 'The Reddit manifest failure was not identified in diagnostics.');
@@ -231,7 +234,7 @@ check(recordUrlEvent($ownerA, 'field_paste', 'https://media.public-site.net/watc
 $recentEvents = listUrlEvents(1);
 check(($recentEvents[0]['url'] ?? '') === 'https://media.public-site.net/watch?token=debug' && ($recentEvents[0]['event_type'] ?? '') === 'field_paste', 'URL diagnostics did not retain the attempted URL and interaction.');
 check(($recentEvents[0]['details']['trigger'] ?? '') === 'paste', 'URL diagnostic details were not retained.');
-check((appBuildInfo()['version'] ?? '') === '2026.10.22', 'Build information is not available to the Help dialog.');
+check((appBuildInfo()['version'] ?? '') === '2026.10.23', 'Build information is not available to the Help dialog.');
 $sourceDir = $testRoot . '/source';
 mkdir($sourceDir, 0775, true);
 file_put_contents($sourceDir . '/Example & notes.txt', 'private transcript');

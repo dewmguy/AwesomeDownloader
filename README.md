@@ -23,7 +23,8 @@ transcription container.
 - server-side URL and DNS checks that reject private network targets
 - bounded, success-only URL-validation caching to make transient site failures
   immediately retryable
-- a public-embed fallback for native Reddit videos when Reddit blocks its JSON
+- a dedicated media-embed resolver for native Reddit videos when Reddit blocks
+  its general embed or JSON endpoints
   metadata endpoint for server traffic
 
 ## Requirements
@@ -89,9 +90,9 @@ services:
       context: .
       args:
         WHISPER_MODEL: ${WHISPER_MODEL:-small}
-        APP_VERSION: ${APP_VERSION:-2026.10.22}
+        APP_VERSION: ${APP_VERSION:-2026.10.23}
         APP_COMMIT: ${APP_COMMIT:-unknown}
-        APP_UPDATED_AT: ${APP_UPDATED_AT:-2026-10-22}
+        APP_UPDATED_AT: ${APP_UPDATED_AT:-2026-10-23}
     image: awesome-downloader:latest
     container_name: awesome-downloader
     ports:
@@ -246,9 +247,9 @@ Set these in `compose.yaml` or in a Compose override:
 | --- | --- | --- |
 | `DOWNLOADER_PORT` | `8080` | host port mapped to the container |
 | `WHISPER_MODEL` | `small` | model baked into the image and used at runtime |
-| `APP_VERSION` | `2026.10.22` | release label shown in the Help dialog |
+| `APP_VERSION` | `2026.10.23` | release label shown in the Help dialog |
 | `APP_COMMIT` | current Git commit with `scripts/dev`; otherwise `unknown` | source revision shown in Help |
-| `APP_UPDATED_AT` | current commit date with `scripts/dev`; otherwise `2026-10-22` | last-updated date shown in Help |
+| `APP_UPDATED_AT` | current commit date with `scripts/dev`; otherwise `2026-10-23` | last-updated date shown in Help |
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU inference quantization |
 | `WHISPER_THREADS` | `3` | transcription CPU threads |
 | `DOWNLOADER_GIF_MAX_SECONDS` | `600` | longest accepted GIF source |
@@ -307,8 +308,9 @@ source policy rather than a container failure. Failed and transient URL
 validations are not cached, so they can be retried immediately.
 
 Canonical public Reddit posts containing native `v.redd.it` video use Reddit's
-public embed metadata and verify the native HLS manifest directly; they do not
-depend on Reddit's generic extractor path or require account cookies. Private,
+dedicated `redditmedia.com` player metadata and verify the native HLS manifest
+directly. They do not depend on Reddit's blocked general embed/JSON endpoints,
+generic extractor path, or account cookies. Private,
 deleted, non-video, and unsupported Reddit posts can still be unavailable.
 
 URL-field interactions, attempted URLs, validation statuses, user-facing
