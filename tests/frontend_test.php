@@ -114,7 +114,7 @@ checkFrontend(str_contains($entrypoint, 'DOWNLOADER_DATA_DIR:-/data') && str_con
 checkFrontend(str_contains($supervisor, '"token provider"') && str_contains($supervisor, '"transcriber"') && str_contains($supervisor, '"Apache"'), 'The required processes are not supervised together.');
 checkFrontend(str_contains($cleanupLoop, 'php /var/www/html/system/ajax.php cleanup') && str_contains($cleanupLoop, 'DOWNLOADER_CLEANUP_INTERVAL_SECONDS:-900'), 'The periodic retention cleanup is missing.');
 checkFrontend(str_contains($compose, 'downloader-data:/data') && str_contains($compose, "\nvolumes:\n  downloader-data:"), 'Compose does not use one Docker-managed data volume.');
-checkFrontend(str_contains($compose, 'APP_COMMIT: ${APP_COMMIT:-unknown}') && str_contains($compose, 'APP_UPDATED_AT: ${APP_UPDATED_AT:-2026-10-23}'), 'Compose does not expose build metadata arguments.');
+checkFrontend(str_contains($compose, 'APP_COMMIT: ${APP_COMMIT:-unknown}') && str_contains($compose, 'APP_UPDATED_AT: ${APP_UPDATED_AT:-2026-10-24}'), 'Compose does not expose build metadata arguments.');
 checkFrontend(!str_contains($compose, './app:') && !str_contains($compose, './temp:') && !str_contains($compose, './download:'), 'Compose still depends on host-path bind mounts.');
 checkFrontend(substr_count($compose, "\n  downloader:") === 1 && !str_contains($compose, 'downloader-transcriber:') && !str_contains($compose, 'downloader-pot-provider:'), 'Compose still defines multiple application services.');
 

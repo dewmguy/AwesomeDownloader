@@ -22,12 +22,14 @@ define('URL_VALIDATION_TIMEOUT', max(5, (int)(getenv('DOWNLOADER_URL_VALIDATION_
 define('URL_VALIDATION_CACHE_SECONDS', max(30, (int)(getenv('DOWNLOADER_URL_VALIDATION_CACHE_SECONDS') ?: 600)));
 define('URL_VALIDATION_CONCURRENCY', max(1, (int)(getenv('DOWNLOADER_URL_VALIDATION_CONCURRENCY') ?: 3)));
 define('URL_VALIDATION_LOCK_PARTITIONS', 256);
-define('URL_VALIDATION_CACHE_VERSION', 7);
+define('URL_VALIDATION_CACHE_VERSION', 8);
+define('REDDIT_REDIRECT_LIMIT', 5);
+define('REDDIT_RESOLUTION_TIMEOUT', min(20, URL_VALIDATION_TIMEOUT));
 define('URL_EVENT_RETENTION_SECONDS', 72 * 60 * 60);
 define('URL_EVENT_RATE_LIMIT', 500);
-define('APP_VERSION', getenv('APP_VERSION') ?: '2026.10.23');
+define('APP_VERSION', getenv('APP_VERSION') ?: '2026.10.24');
 define('APP_COMMIT', getenv('APP_COMMIT') ?: 'unknown');
-define('APP_UPDATED_AT', getenv('APP_UPDATED_AT') ?: '2026-10-23');
+define('APP_UPDATED_AT', getenv('APP_UPDATED_AT') ?: '2026-10-24');
 define('TRANSCRIBER_URL', rtrim(getenv('DOWNLOADER_TRANSCRIBER_URL') ?: 'http://127.0.0.1:8000', '/'));
 define('TRANSCRIBER_SHARED_TEMP_DIR', rtrim(getenv('DOWNLOADER_TRANSCRIBER_SHARED_TEMP_DIR') ?: TEMP_DIR, '/'));
 define('TRANSCRIPTION_TIMEOUT', (int)(getenv('DOWNLOADER_TRANSCRIPTION_TIMEOUT') ?: 14400));
@@ -527,57 +529,377 @@ function redditPostDetails($url) {
   return [
     'postId' => $postId,
     'mediaEmbedUrl' => 'https://www.redditmedia.com/mediaembed/' . $postId,
+    'postEmbedUrl' => 'https://embed.reddit.com' . rtrim($path, '/') . '/',
     'sourceTitle' => $title
   ];
 }
 
-function parseRedditMediaEmbedVideo($html, $sourceTitle) {
-  if (!is_string($html) || $html === '' || strlen($html) > 512 * 1024) return null;
-  if (!preg_match('~\bdata-hls-url="([^"]+)"~i', $html, $mediaMatch)) return null;
-  $hlsUrl = html_entity_decode($mediaMatch[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
-  if (!preg_match('~^https://v\.redd\.it/([a-z0-9]+)/HLSPlaylist\.m3u8(?:\?.*)?$~i', $hlsUrl, $pathMatch)) return null;
-  return [
-    'downloadUrl' => 'https://v.redd.it/' . strtolower($pathMatch[1]) . '/HLSPlaylist.m3u8',
-    'sourceTitle' => $sourceTitle
-  ];
+function htmlTagAttribute($tag, $name) {
+  $quotedName = preg_quote($name, '~');
+  if (preg_match('~\b' . $quotedName . '\s*=\s*(["\'])(.*?)\1~is', (string)$tag, $match)) {
+    return html_entity_decode($match[2], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+  }
+  if (preg_match('~\b' . $quotedName . '\s*=\s*([^\s>]+)~i', (string)$tag, $match)) {
+    return html_entity_decode(trim($match[1], "\"'"), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+  }
+  return null;
 }
 
-function resolveRedditVideo($url, $resolver = null, $fetcher = null) {
+function cleanRedditTitle($title, $fallback) {
+  $title = html_entity_decode(strip_tags((string)$title), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+  $title = preg_replace('/\s+/u', ' ', trim($title));
+  return is_string($title) && $title !== '' ? $title : $fallback;
+}
+
+function redditExternalCandidate($url) {
+  $url = trim(html_entity_decode((string)$url, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+  if (str_starts_with($url, '//')) $url = 'https:' . $url;
+  $parts = parse_url($url);
+  if (!is_array($parts) || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['http', 'https'], true)) return null;
+  $host = strtolower(rtrim((string)($parts['host'] ?? ''), '.'));
+  if ($host === '') return null;
+  if ($host === 'out.reddit.com' && isset($parts['query'])) {
+    parse_str((string)$parts['query'], $query);
+    foreach (['url', 'destination', 'dest'] as $key) {
+      if (!empty($query[$key]) && is_string($query[$key])) return redditExternalCandidate($query[$key]);
+    }
+  }
+  foreach (['reddit.com', 'redd.it', 'redditmedia.com', 'redditstatic.com', 'v.redd.it'] as $redditHost) {
+    if ($host === $redditHost || str_ends_with($host, '.' . $redditHost)) return null;
+  }
+  return $url;
+}
+
+function parseRedditPostMetadata($html, $fallbackTitle) {
+  if (!is_string($html) || $html === '' || strlen($html) > 2 * 1024 * 1024) {
+    return ['kind' => 'missing', 'reason' => 'missing', 'sourceTitle' => $fallbackTitle];
+  }
+
+  $title = $fallbackTitle;
+  $metaExternalUrls = [];
+  if (preg_match_all('~<meta\b[^>]*>~i', $html, $metaTags)) {
+    foreach ($metaTags[0] as $tag) {
+      $property = strtolower((string)(htmlTagAttribute($tag, 'property') ?? htmlTagAttribute($tag, 'name') ?? ''));
+      if ($property === 'og:title' || $property === 'twitter:title') {
+        $title = cleanRedditTitle(htmlTagAttribute($tag, 'content'), $title);
+      }
+      if (in_array($property, ['og:video', 'og:video:url', 'og:video:secure_url', 'twitter:player'], true)) {
+        $metaExternalUrls[] = htmlTagAttribute($tag, 'content');
+      }
+    }
+  }
+  if (preg_match('~<a[^>]+id=["\']embed-title["\'][^>]*>.*?<h1[^>]*>(.*?)</h1>~is', $html, $titleMatch)) {
+    $title = cleanRedditTitle($titleMatch[1], $title);
+  }
+
+  if (preg_match('~\bdata-hls-url\s*=\s*(["\'])(.*?)\1~is', $html, $hlsMatch)) {
+    $hlsUrl = html_entity_decode($hlsMatch[2], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    if (preg_match('~^https://v\.redd\.it/([a-z0-9]+)/HLSPlaylist\.m3u8(?:\?.*)?$~i', $hlsUrl, $pathMatch)) {
+      return [
+        'kind' => 'native',
+        'downloadUrl' => 'https://v.redd.it/' . strtolower($pathMatch[1]) . '/HLSPlaylist.m3u8',
+        'sourceTitle' => $title
+      ];
+    }
+  }
+
+  $post = null;
+  if (preg_match('~<shreddit-screenview-data\b[^>]*\bdata=(["\'])(.*?)\1~is', $html, $contextMatch)) {
+    $context = json_decode(html_entity_decode($contextMatch[2], ENT_QUOTES | ENT_HTML5, 'UTF-8'), true);
+    if (is_array($context) && isset($context['post']) && is_array($context['post'])) $post = $context['post'];
+  }
+  if ($post !== null) {
+    $title = cleanRedditTitle($post['title'] ?? '', $title);
+    $type = strtolower((string)($post['type'] ?? $post['post_type'] ?? ''));
+    $postUrls = [];
+    foreach (['url_overridden_by_dest', 'outbound_url', 'destination_url', 'external_url', 'content_href', 'url'] as $key) {
+      if (!empty($post[$key]) && is_string($post[$key])) $postUrls[] = html_entity_decode($post[$key], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+    if ($type === 'video') {
+      foreach ($postUrls as $postUrl) {
+        if (!preg_match('~^https://v\.redd\.it/([a-z0-9]+)/?$~i', $postUrl, $nativeMatch)) continue;
+        return [
+          'kind' => 'native',
+          'downloadUrl' => 'https://v.redd.it/' . strtolower($nativeMatch[1]) . '/HLSPlaylist.m3u8',
+          'sourceTitle' => $title
+        ];
+      }
+    }
+    if (in_array($type, ['gallery', 'image_gallery'], true)) return ['kind' => 'missing', 'reason' => 'gallery', 'sourceTitle' => $title];
+    if (in_array($type, ['self', 'text', 'selfpost'], true)) return ['kind' => 'missing', 'reason' => 'self', 'sourceTitle' => $title];
+    if (in_array($type, ['deleted', 'private', 'removed', 'unavailable'], true) || !empty($post['is_deleted']) || !empty($post['is_private'])) {
+      return ['kind' => 'missing', 'reason' => 'unavailable', 'sourceTitle' => $title];
+    }
+    foreach ($postUrls as $postUrl) {
+      $externalUrl = redditExternalCandidate($postUrl);
+      if ($externalUrl !== null) return ['kind' => 'external', 'outboundUrl' => $externalUrl, 'sourceTitle' => $title];
+    }
+  }
+
+  if (preg_match_all('~<shreddit-post\b[^>]*>~i', $html, $postTags)) {
+    foreach ($postTags[0] as $tag) {
+      $type = strtolower((string)(htmlTagAttribute($tag, 'post-type') ?? htmlTagAttribute($tag, 'type') ?? ''));
+      if ((string)htmlTagAttribute($tag, 'is-gallery') === 'true' || $type === 'gallery') {
+        return ['kind' => 'missing', 'reason' => 'gallery', 'sourceTitle' => $title];
+      }
+      if ((string)htmlTagAttribute($tag, 'is-self') === 'true' || in_array($type, ['self', 'text'], true)) {
+        return ['kind' => 'missing', 'reason' => 'self', 'sourceTitle' => $title];
+      }
+      if ((string)htmlTagAttribute($tag, 'is-deleted') === 'true' || (string)htmlTagAttribute($tag, 'is-private') === 'true') {
+        return ['kind' => 'missing', 'reason' => 'unavailable', 'sourceTitle' => $title];
+      }
+      foreach (['content-href', 'outbound-url', 'data-url'] as $attribute) {
+        $externalUrl = redditExternalCandidate(htmlTagAttribute($tag, $attribute));
+        if ($externalUrl !== null) return ['kind' => 'external', 'outboundUrl' => $externalUrl, 'sourceTitle' => $title];
+      }
+    }
+  }
+
+  foreach ($metaExternalUrls as $candidate) {
+    $externalUrl = redditExternalCandidate($candidate);
+    if ($externalUrl !== null) return ['kind' => 'external', 'outboundUrl' => $externalUrl, 'sourceTitle' => $title];
+  }
+
+  if (preg_match_all('~<iframe\b[^>]*>~i', $html, $iframeTags)) {
+    foreach ($iframeTags[0] as $tag) {
+      $externalUrl = redditExternalCandidate(htmlTagAttribute($tag, 'src'));
+      if ($externalUrl !== null) return ['kind' => 'external', 'outboundUrl' => $externalUrl, 'sourceTitle' => $title];
+    }
+  }
+
+  if (preg_match_all('~<a\b[^>]*>~i', $html, $anchorTags)) {
+    foreach ($anchorTags[0] as $tag) {
+      $class = strtolower((string)htmlTagAttribute($tag, 'class'));
+      $slot = strtolower((string)htmlTagAttribute($tag, 'slot'));
+      if (!str_contains($class, 'title') && !in_array($slot, ['full-post-link', 'outbound-link'], true)) continue;
+      $externalUrl = redditExternalCandidate(htmlTagAttribute($tag, 'href'));
+      if ($externalUrl !== null) return ['kind' => 'external', 'outboundUrl' => $externalUrl, 'sourceTitle' => $title];
+    }
+  }
+
+  $lowerHtml = strtolower($html);
+  if (str_contains($lowerHtml, 'this post was deleted') || str_contains($lowerHtml, 'this post is private') || str_contains($lowerHtml, 'post is unavailable')) {
+    return ['kind' => 'missing', 'reason' => 'unavailable', 'sourceTitle' => $title];
+  }
+  return ['kind' => 'missing', 'reason' => 'missing', 'sourceTitle' => $title];
+}
+
+function normalizeRedirectIdentity($url) {
+  $parts = parse_url((string)$url);
+  if (!is_array($parts)) return trim((string)$url);
+  $scheme = strtolower((string)($parts['scheme'] ?? ''));
+  $host = strtolower(rtrim((string)($parts['host'] ?? ''), '.'));
+  $port = isset($parts['port']) && !(($scheme === 'http' && $parts['port'] === 80) || ($scheme === 'https' && $parts['port'] === 443)) ? ':' . $parts['port'] : '';
+  $path = $parts['path'] ?? '/';
+  $query = isset($parts['query']) ? '?' . $parts['query'] : '';
+  return $scheme . '://' . $host . $port . ($path === '' ? '/' : $path) . $query;
+}
+
+function normalizeRedirectPath($path) {
+  $segments = [];
+  foreach (explode('/', (string)$path) as $segment) {
+    if ($segment === '' || $segment === '.') continue;
+    if ($segment === '..') array_pop($segments);
+    else $segments[] = $segment;
+  }
+  return '/' . implode('/', $segments);
+}
+
+function resolveRedirectLocation($baseUrl, $location) {
+  $location = trim(html_entity_decode((string)$location, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+  if ($location === '' || preg_match('/[\x00-\x1F\x7F]/', $location)) return null;
+  if (preg_match('~^https?://~i', $location)) return $location;
+  $base = parse_url($baseUrl);
+  if (!is_array($base) || empty($base['scheme']) || empty($base['host'])) return null;
+  $origin = strtolower($base['scheme']) . '://' . $base['host'] . (isset($base['port']) ? ':' . $base['port'] : '');
+  if (str_starts_with($location, '//')) return strtolower($base['scheme']) . ':' . $location;
+  if (str_starts_with($location, '?')) return $origin . ($base['path'] ?? '/') . $location;
+  if (str_starts_with($location, '#')) return $baseUrl;
+  $locationParts = parse_url($location);
+  if ($locationParts === false || isset($locationParts['scheme']) || isset($locationParts['host'])) return null;
+  $query = isset($locationParts['query']) ? '?' . $locationParts['query'] : '';
+  $relativePath = $locationParts['path'] ?? '';
+  if (str_starts_with($relativePath, '/')) return $origin . normalizeRedirectPath($relativePath) . $query;
+  $baseDirectory = rtrim(str_replace('\\', '/', dirname($base['path'] ?? '/')), '/');
+  return $origin . normalizeRedirectPath($baseDirectory . '/' . $relativePath) . $query;
+}
+
+function redirectLocationFromExecution($execution) {
+  if (isset($execution['location']) && is_string($execution['location'])) return trim($execution['location']);
+  $headers = (string)($execution['headers'] ?? $execution['stdout'] ?? '');
+  if (!preg_match_all('/^location:\s*(.+?)\s*$/mi', $headers, $matches) || empty($matches[1])) return null;
+  return trim((string)end($matches[1]));
+}
+
+function resolveBoundedRedirects($url, $resolver = null, $fetcher = null, $limit = REDDIT_REDIRECT_LIMIT, $deadline = null) {
+  $current = $url;
+  $visited = [];
+  $chain = [];
+  $deadline = $deadline ?? microtime(true) + REDDIT_RESOLUTION_TIMEOUT;
+  for ($hop = 0; $hop <= $limit; $hop++) {
+    $target = validatePublicUrlTarget($current, $resolver);
+    if (!$target['valid']) {
+      return invalidUrlResult('The Reddit destination redirects to an unsafe or private network address.', [
+        'diagnosticStage' => 'reddit_redirect_target',
+        'diagnosticDetail' => $target['message'] ?? 'Redirect target rejected.',
+        'redirectChain' => $chain
+      ]);
+    }
+    $current = $target['url'];
+    $identity = normalizeRedirectIdentity($current);
+    if (isset($visited[$identity])) {
+      return invalidUrlResult('The Reddit destination contains a redirect loop.', [
+        'diagnosticStage' => 'reddit_redirect_loop',
+        'diagnosticDetail' => 'A redirect target was visited more than once.',
+        'redirectChain' => $chain
+      ]);
+    }
+    $visited[$identity] = true;
+    $chain[] = $current;
+
+    $remaining = $deadline - microtime(true);
+    if ($remaining <= 0) {
+      return invalidUrlResult('The Reddit destination took too long to resolve. Try again.', [
+        'diagnosticStage' => 'reddit_redirect_timeout',
+        'diagnosticDetail' => 'The total Reddit resolution deadline was reached.',
+        'redirectChain' => $chain
+      ]);
+    }
+    $probeTimeout = max(1, min(4, (int)ceil($remaining)));
+
+    $execution = $fetcher === null
+      ? executeCommand([
+        'curl', '--silent', '--show-error', '--compressed', '--head', '--max-redirs', '0',
+        '--max-time', (string)$probeTimeout, '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36',
+        '--dump-header', '-', '--output', '/dev/null', $current
+      ], $probeTimeout + 1)
+      : $fetcher($current, $probeTimeout, 'redirect_probe');
+    if (!is_array($execution) || ($execution['exitCode'] ?? 1) !== 0) {
+      return invalidUrlResult('The Reddit destination could not be reached reliably. Try again in a moment.', [
+        'diagnosticStage' => 'reddit_redirect_probe',
+        'diagnosticDetail' => sanitizedValidationError($execution['stderr'] ?? ''),
+        'redirectChain' => $chain
+      ]);
+    }
+    $location = redirectLocationFromExecution($execution);
+    if ($location === null || $location === '') {
+      return ['valid' => true, 'url' => $current, 'redirectChain' => $chain];
+    }
+    if ($hop === $limit) {
+      return invalidUrlResult('The Reddit destination uses too many redirects.', [
+        'diagnosticStage' => 'reddit_redirect_limit',
+        'diagnosticDetail' => 'The redirect limit of ' . $limit . ' was exceeded.',
+        'redirectChain' => $chain
+      ]);
+    }
+    $next = resolveRedirectLocation($current, $location);
+    if ($next === null) {
+      return invalidUrlResult('The Reddit destination returned an invalid redirect.', [
+        'diagnosticStage' => 'reddit_redirect_location',
+        'diagnosticDetail' => 'The redirect Location header was invalid.',
+        'redirectChain' => $chain
+      ]);
+    }
+    $current = $next;
+  }
+  return invalidUrlResult('The Reddit destination uses too many redirects.');
+}
+
+function redditMissingMediaResult($reason, $diagnostic = []) {
+  $messages = [
+    'self' => 'This Reddit post is a self-post and does not link to downloadable media.',
+    'gallery' => 'This Reddit post is a gallery, not a single supported media link.',
+    'unavailable' => 'This Reddit post is deleted, private, or unavailable.',
+    'missing' => 'No outbound media link was found in this Reddit post.'
+  ];
+  return invalidUrlResult($messages[$reason] ?? $messages['missing'], $diagnostic);
+}
+
+function resolveRedditPost($url, $resolver = null, $fetcher = null) {
   $post = redditPostDetails($url);
   if ($post === null) return null;
 
-  $embedTarget = validatePublicUrlTarget($post['mediaEmbedUrl'], $resolver);
-  if (!$embedTarget['valid']) return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.', [
-    'diagnosticStage' => 'reddit_media_embed_target',
-    'diagnosticDetail' => $embedTarget['message'] ?? 'Media embed target rejected.'
-  ]);
-
-  $timeout = min(15, URL_VALIDATION_TIMEOUT);
-  $execution = $fetcher === null
-    ? executeCommand([
-      'curl', '--fail-with-body', '--silent', '--show-error', '--compressed',
-      '--max-time', (string)$timeout, '--max-filesize', (string)(512 * 1024),
-      '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36',
-      '--header', 'Accept-Language: en-US,en;q=0.9',
-      '--header', 'Accept: text/html', $embedTarget['url']
-    ], $timeout + 1)
-    : $fetcher($embedTarget['url'], $timeout, 'media_embed');
-
-  if (!is_array($execution) || ($execution['exitCode'] ?? 1) !== 0) {
-    if ($fetcher === null && is_array($execution)) logValidationFailure($url, $execution, 0);
-    return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.', [
-      'diagnosticStage' => 'reddit_media_embed_fetch',
-      'diagnosticDetail' => sanitizedValidationError($execution['stderr'] ?? ''),
-      'exitCode' => (int)($execution['exitCode'] ?? 1),
-      'timedOut' => !empty($execution['timedOut'])
-    ]);
+  $deadline = microtime(true) + REDDIT_RESOLUTION_TIMEOUT;
+  $metadata = null;
+  $fetchFailures = [];
+  foreach ([
+    ['stage' => 'media_embed', 'url' => $post['mediaEmbedUrl'], 'maxBytes' => 512 * 1024],
+    ['stage' => 'post_embed', 'url' => $post['postEmbedUrl'], 'maxBytes' => 2 * 1024 * 1024]
+  ] as $endpoint) {
+    $remaining = $deadline - microtime(true);
+    if ($remaining <= 0) break;
+    $timeout = max(1, min(8, (int)ceil($remaining)));
+    $embedTarget = validatePublicUrlTarget($endpoint['url'], $resolver);
+    if (!$embedTarget['valid']) {
+      return invalidUrlResult('Reddit could not be reached safely.', [
+        'diagnosticStage' => 'reddit_' . $endpoint['stage'] . '_target',
+        'diagnosticDetail' => $embedTarget['message'] ?? 'Reddit metadata target rejected.'
+      ]);
+    }
+    $execution = $fetcher === null
+      ? executeCommand([
+        'curl', '--fail-with-body', '--silent', '--show-error', '--compressed',
+        '--max-time', (string)$timeout, '--max-filesize', (string)$endpoint['maxBytes'],
+        '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36',
+        '--header', 'Accept-Language: en-US,en;q=0.9',
+        '--header', 'Accept: text/html', $embedTarget['url']
+      ], $timeout + 1)
+      : $fetcher($embedTarget['url'], $timeout, $endpoint['stage']);
+    if (!is_array($execution) || ($execution['exitCode'] ?? 1) !== 0) {
+      if ($fetcher === null && is_array($execution)) logValidationFailure($url, $execution, 0);
+      $fetchFailures[] = [
+        'stage' => $endpoint['stage'],
+        'detail' => sanitizedValidationError($execution['stderr'] ?? ''),
+        'exitCode' => (int)($execution['exitCode'] ?? 1),
+        'timedOut' => !empty($execution['timedOut'])
+      ];
+      continue;
+    }
+    $candidate = parseRedditPostMetadata($execution['stdout'] ?? '', $post['sourceTitle']);
+    if (($candidate['kind'] ?? '') !== 'missing' || ($candidate['reason'] ?? '') !== 'missing') {
+      $metadata = $candidate;
+      break;
+    }
+    $metadata = $candidate;
   }
 
-  $media = parseRedditMediaEmbedVideo($execution['stdout'] ?? '', $post['sourceTitle']);
-  if ($media === null) return invalidUrlResult('This Reddit post does not expose a public native video.', [
-    'diagnosticStage' => 'reddit_media_embed_parse',
-    'diagnosticDetail' => 'No public native-video metadata was found in the media embed response.'
+  if ($metadata === null) {
+    $lastFailure = end($fetchFailures) ?: [];
+    return invalidUrlResult('Reddit could not be reached reliably. Try again in a moment.', [
+      'diagnosticStage' => 'reddit_metadata_fetch',
+      'diagnosticDetail' => $lastFailure['detail'] ?? 'Every Reddit metadata endpoint failed.',
+      'exitCode' => $lastFailure['exitCode'] ?? 1,
+      'timedOut' => !empty($lastFailure['timedOut'])
+    ]);
+  }
+  if (($metadata['kind'] ?? '') === 'missing') {
+    return redditMissingMediaResult($metadata['reason'] ?? 'missing', [
+      'diagnosticStage' => 'reddit_metadata_' . ($metadata['reason'] ?? 'missing'),
+      'diagnosticDetail' => 'Reddit metadata did not contain a usable native or outbound media URL.'
+    ]);
+  }
+  if (($metadata['kind'] ?? '') === 'external') {
+    $redirectResult = resolveBoundedRedirects($metadata['outboundUrl'], $resolver, $fetcher, REDDIT_REDIRECT_LIMIT, $deadline);
+    if (!$redirectResult['valid']) return $redirectResult;
+    return [
+      'valid' => true,
+      'kind' => 'external',
+      'message' => 'Reddit destination resolved.',
+      'downloadUrl' => $redirectResult['url'],
+      'sourceTitle' => $metadata['sourceTitle'],
+      'originalUrl' => $url,
+      'redirectChain' => $redirectResult['redirectChain']
+    ];
+  }
+
+  $media = $metadata;
+
+  $remaining = $deadline - microtime(true);
+  if ($remaining <= 0) return invalidUrlResult('Reddit took too long to resolve. Try again.', [
+    'diagnosticStage' => 'reddit_resolution_timeout',
+    'diagnosticDetail' => 'The total Reddit resolution deadline was reached before media verification.'
   ]);
+  $timeout = max(1, min(8, (int)ceil($remaining)));
 
   $mediaTarget = validatePublicUrlTarget($media['downloadUrl'], $resolver);
   if (!$mediaTarget['valid']) return invalidUrlResult('The Reddit video location could not be verified safely.', [
@@ -606,7 +928,7 @@ function resolveRedditVideo($url, $resolver = null, $fetcher = null) {
       'timedOut' => !empty($manifestExecution['timedOut'])
     ]);
   }
-  return ['valid' => true, 'message' => 'Reddit video resolved.'] + $media;
+  return ['valid' => true, 'kind' => 'native', 'message' => 'Reddit video resolved.', 'originalUrl' => $url] + $media;
 }
 
 function buildYtDlpValidationCommand($url) {
@@ -644,6 +966,20 @@ function formatExtractorName($extractor) {
   if (str_starts_with($normalized, 'youtube')) return 'YouTube';
   if (in_array($normalized, ['generic', 'media'], true)) return 'this media service';
   return $extractor;
+}
+
+function providerNameForUrl($url) {
+  $host = strtolower(rtrim((string)(parse_url((string)$url, PHP_URL_HOST) ?: 'external provider'), '.'));
+  $providers = [
+    'youtube.com' => 'YouTube', 'youtu.be' => 'YouTube', 'vimeo.com' => 'Vimeo',
+    'streamable.com' => 'Streamable', 'tiktok.com' => 'TikTok', 'x.com' => 'X',
+    'twitter.com' => 'X', 'instagram.com' => 'Instagram', 'twitch.tv' => 'Twitch',
+    'soundcloud.com' => 'SoundCloud', 'redgifs.com' => 'RedGIFs', 'imgur.com' => 'Imgur'
+  ];
+  foreach ($providers as $domain => $name) {
+    if ($host === $domain || str_ends_with($host, '.' . $domain)) return $name;
+  }
+  return preg_match('/^[a-z0-9.-]{1,253}$/', $host) ? $host : 'external provider';
 }
 
 function queueUrlIdentity($url) {
@@ -764,7 +1100,12 @@ function validationDiagnosticDetails($validation, $durationMs) {
     'stage' => $validation['diagnosticStage'] ?? null,
     'detail' => $validation['diagnosticDetail'] ?? null,
     'exitCode' => $validation['exitCode'] ?? null,
-    'timedOut' => $validation['timedOut'] ?? null
+    'timedOut' => $validation['timedOut'] ?? null,
+    'destination' => $validation['downloadUrl'] ?? null,
+    'provider' => $validation['destinationProvider'] ?? null,
+    'redirects' => isset($validation['redirectChain']) && is_array($validation['redirectChain'])
+      ? implode(' -> ', $validation['redirectChain'])
+      : null
   ];
 }
 
@@ -803,25 +1144,29 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
   }
 
   try {
-    $redditMedia = resolveRedditVideo($url, $resolver, $redditFetcher);
+    $redditMedia = resolveRedditPost($url, $resolver, $redditFetcher);
     if ($redditMedia !== null && empty($redditMedia['valid'])) {
       return $redditMedia;
     }
 
-    if ($redditMedia !== null) {
+    if ($redditMedia !== null && ($redditMedia['kind'] ?? 'native') === 'native') {
       $result = [
         'valid' => true,
         'message' => 'Verified Reddit link.',
         'extractor' => 'Reddit',
         'sourceTitle' => normalizedOutputTitle($redditMedia['sourceTitle'] ?? 'Reddit video'),
         'isPlaylist' => false,
-        'downloadUrl' => $redditMedia['downloadUrl']
+        'downloadUrl' => $redditMedia['downloadUrl'],
+        'originalUrl' => $url,
+        'wrappedBy' => 'Reddit'
       ];
       if ($useCache) writeUrlValidationCache($url, $result);
       return $result;
     }
 
-    $command = buildYtDlpValidationCommand($url);
+    $isRedditExternal = $redditMedia !== null && ($redditMedia['kind'] ?? '') === 'external';
+    $validationUrl = $isRedditExternal ? $redditMedia['downloadUrl'] : $url;
+    $command = buildYtDlpValidationCommand($validationUrl);
     $startedAt = microtime(true);
     $execution = $runner === null
       ? executeCommand($command, URL_VALIDATION_TIMEOUT)
@@ -832,22 +1177,44 @@ function validateMediaUrl($url, $resolver = null, $runner = null, $useCache = tr
 
     if ($metadata === null) {
       if ($runner === null) logValidationFailure($url, $execution, microtime(true) - $startedAt);
-      $result = validationFailureResult($execution);
+      $unsupported = str_contains(strtolower((string)($execution['stderr'] ?? '')), 'unsupported url');
+      if ($isRedditExternal && $unsupported) {
+        $providerName = providerNameForUrl($validationUrl);
+        $result = invalidUrlResult('This Reddit post links to ' . $providerName . ', which this downloader does not support.');
+        $result['destinationProvider'] = $providerName;
+      }
+      else $result = validationFailureResult($execution);
       $result['diagnosticStage'] = 'media_extractor';
       $result['diagnosticDetail'] = sanitizedValidationError($execution['stderr'] ?? '');
       $result['exitCode'] = (int)($execution['exitCode'] ?? 1);
       $result['timedOut'] = !empty($execution['timedOut']);
+      if ($isRedditExternal) {
+        $result['downloadUrl'] = $validationUrl;
+        $result['originalUrl'] = $url;
+        $result['wrappedBy'] = 'Reddit';
+        $result['destinationProvider'] = $result['destinationProvider'] ?? providerNameForUrl($validationUrl);
+        $result['redirectChain'] = $redditMedia['redirectChain'] ?? [];
+      }
     }
     else {
       $extractor = $metadata['extractor'];
       $extractorName = formatExtractorName($extractor);
       $result = [
         'valid' => true,
-        'message' => $extractorName === 'this media service' ? 'Verified media link.' : 'Verified ' . $extractorName . ' link.',
+        'message' => $isRedditExternal
+          ? ($extractorName === 'this media service' ? 'Verified external media link from Reddit.' : 'Verified ' . $extractorName . ' link from Reddit.')
+          : ($extractorName === 'this media service' ? 'Verified media link.' : 'Verified ' . $extractorName . ' link.'),
         'extractor' => $extractor,
-        'sourceTitle' => normalizedOutputTitle($metadata['sourceTitle']),
+        'sourceTitle' => normalizedOutputTitle($isRedditExternal ? $redditMedia['sourceTitle'] : $metadata['sourceTitle']),
         'isPlaylist' => !empty($metadata['isPlaylist'])
       ];
+      if ($isRedditExternal) {
+        $result['downloadUrl'] = $validationUrl;
+        $result['originalUrl'] = $url;
+        $result['wrappedBy'] = 'Reddit';
+        $result['destinationProvider'] = $extractorName === 'this media service' ? providerNameForUrl($validationUrl) : $extractorName;
+        $result['redirectChain'] = $redditMedia['redirectChain'] ?? [];
+      }
     }
 
     if ($useCache) writeUrlValidationCache($url, $result);

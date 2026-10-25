@@ -7,11 +7,11 @@ cd "$repo_root"
 app_image=awesome-downloader:latest
 test_image=awesome-downloader-test:latest
 whisper_model=${WHISPER_MODEL:-small}
-app_version=${APP_VERSION:-2026.10.23}
+app_version=${APP_VERSION:-2026.10.24}
 app_commit=${APP_COMMIT:-}
 app_updated_at=${APP_UPDATED_AT:-}
 if [ -z "$app_commit" ]; then app_commit=$(git rev-parse --short=12 HEAD 2>/dev/null || printf '%s' unknown); fi
-if [ -z "$app_updated_at" ]; then app_updated_at=$(git log -1 --format=%cs HEAD 2>/dev/null || printf '%s' 2026-10-23); fi
+if [ -z "$app_updated_at" ]; then app_updated_at=$(git log -1 --format=%cs HEAD 2>/dev/null || printf '%s' 2026-10-24); fi
 
 usage() {
   cat <<'EOF'
@@ -29,7 +29,7 @@ Commands:
 
 Environment:
   WHISPER_MODEL     Whisper model baked into the image (default: small).
-  APP_VERSION       Version shown in Help (default: 2026.10.23).
+  APP_VERSION       Version shown in Help (default: 2026.10.24).
   APP_COMMIT        Commit shown in Help (default: current Git commit).
   APP_UPDATED_AT    Last-updated date shown in Help (default: commit date).
   DOWNLOADER_PORT   Host HTTP port used by Compose (default: 8080).

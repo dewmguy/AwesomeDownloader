@@ -11,6 +11,13 @@ function check($condition, $message) {
   if (!$condition) $failures[] = $message;
 }
 
+function redditFixture($name) {
+  $path = __DIR__ . '/fixtures/reddit/' . basename($name);
+  $contents = file_get_contents($path);
+  if ($contents === false) throw new RuntimeException('Missing Reddit fixture: ' . $name);
+  return $contents;
+}
+
 $batch = normalizeQueueItems(json_encode([
   ['url' => 'https://www.youtube.com/watch?v=one', 'mode' => 'base'],
   ['url' => 'https://www.youtube.com/playlist?list=two', 'mode' => 'mp3'],
@@ -41,6 +48,9 @@ foreach (['127.0.0.1', '10.0.0.1', '100.64.0.1', '169.254.1.1', '192.0.2.1', '19
   check(!isPublicIpAddress($blockedAddress), "Special-use address $blockedAddress was treated as public.");
 }
 check(isPublicIpAddress('8.8.8.8') && isPublicIpAddress('2001:4860:4860::8888'), 'Public addresses were rejected.');
+check(resolveRedirectLocation('https://media.public-site.net/path/start', '../video?id=1') === 'https://media.public-site.net/video?id=1', 'A safe relative redirect was resolved incorrectly.');
+check(resolveRedirectLocation('https://media.public-site.net/path/start', '//cdn.public-site.net/video') === 'https://cdn.public-site.net/video', 'A scheme-relative redirect was resolved incorrectly.');
+check(resolveRedirectLocation('https://media.public-site.net/path/start', 'javascript:alert(1)') === null, 'A non-web redirect scheme was accepted.');
 
 $publicTarget = validatePublicUrlTarget('https://media.public-site.net/video', fn($host) => ['8.8.8.8', '2001:4860:4860::8888']);
 check($publicTarget['valid'], 'A URL resolving only to public addresses was rejected.');
@@ -54,14 +64,27 @@ $redditPost = redditPostDetails($redditUrl);
 check(($redditPost['mediaEmbedUrl'] ?? '') === 'https://www.redditmedia.com/mediaembed/abc123', 'A canonical Reddit post URL did not map to its media embed URL.');
 check(($redditPost['sourceTitle'] ?? '') === 'A public video', 'The Reddit post slug was not converted to a usable title.');
 check(redditPostDetails('https://www.reddit.com/r/example/s/share-code') === null, 'An unsupported Reddit share URL was treated as a canonical post.');
-$redditMediaEmbedHtml = <<<'HTML'
-<div id="video-abc123" data-hls-url="https://v.redd.it/media123/HLSPlaylist.m3u8?a=signature&amp;v=1" data-link-url="https://v.redd.it/media123"></div>
-HTML;
-$parsedRedditVideo = parseRedditMediaEmbedVideo($redditMediaEmbedHtml, $redditPost['sourceTitle']);
-check(($parsedRedditVideo['downloadUrl'] ?? '') === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit media embed playlist was not extracted.');
-check(($parsedRedditVideo['sourceTitle'] ?? '') === 'A public video', 'The Reddit slug title was not retained with its video.');
-check(parseRedditMediaEmbedVideo('<p>No native video</p>', 'Example') === null, 'A Reddit media embed without native video was accepted.');
-check(parseRedditMediaEmbedVideo('<div data-hls-url="https://v.redd.it.attacker.example/media123/HLSPlaylist.m3u8"></div>', 'Example') === null, 'A lookalike Reddit media hostname was accepted.');
+$redditMediaEmbedHtml = redditFixture('native-video.html');
+$parsedRedditVideo = parseRedditPostMetadata($redditMediaEmbedHtml, $redditPost['sourceTitle']);
+check(($parsedRedditVideo['kind'] ?? '') === 'native' && ($parsedRedditVideo['downloadUrl'] ?? '') === 'https://v.redd.it/native123/HLSPlaylist.m3u8', 'The native Reddit video fixture was not extracted.');
+check(($parsedRedditVideo['sourceTitle'] ?? '') === 'Native Reddit Video', 'Native Reddit title metadata was not retained.');
+$externalFixtures = [
+  'external-youtube.html' => ['https://youtu.be/video123', 'A YouTube Wrapper'],
+  'external-vimeo.html' => ['https://vimeo.com/123456', 'A Vimeo Wrapper'],
+  'external-streamable.html' => ['https://streamable.com/example', 'A Streamable Wrapper'],
+  'external-tiktok.html' => ['https://www.tiktok.com/@creator/video/123456789', 'A TikTok Wrapper']
+];
+foreach ($externalFixtures as $fixture => [$expectedUrl, $expectedTitle]) {
+  $parsed = parseRedditPostMetadata(redditFixture($fixture), 'Fallback title');
+  check(($parsed['kind'] ?? '') === 'external' && ($parsed['outboundUrl'] ?? '') === $expectedUrl, "The $fixture destination was not extracted.");
+  check(($parsed['sourceTitle'] ?? '') === $expectedTitle, "The $fixture title was not retained.");
+}
+check((parseRedditPostMetadata(redditFixture('self-post.html'), 'Fallback')['reason'] ?? '') === 'self', 'The self-post fixture was not distinguished from missing media.');
+check((parseRedditPostMetadata(redditFixture('gallery.html'), 'Fallback')['reason'] ?? '') === 'gallery', 'The gallery fixture was not distinguished from missing media.');
+check((parseRedditPostMetadata(redditFixture('deleted-private.html'), 'Fallback')['reason'] ?? '') === 'unavailable', 'The deleted/private fixture was not identified.');
+check((parseRedditPostMetadata(redditFixture('private-post.html'), 'Fallback')['reason'] ?? '') === 'unavailable', 'The private-post fixture was not identified.');
+check(redditExternalCandidate('https://out.reddit.com/t3_abc?url=https%3A%2F%2Fvimeo.com%2F123456&amp;token=test') === 'https://vimeo.com/123456', 'A Reddit outbound tracking URL was not unwrapped.');
+check((parseRedditPostMetadata('<div data-hls-url="https://v.redd.it.attacker.example/media123/HLSPlaylist.m3u8"></div>', 'Example')['kind'] ?? '') === 'missing', 'A lookalike Reddit media hostname was accepted.');
 
 $validationCommand = buildYtDlpValidationCommand('https://www.youtube.com/watch?v=test');
 check(in_array('--dump-single-json', $validationCommand, true) && in_array('--skip-download', $validationCommand, true), 'yt-dlp validation is not metadata-only.');
@@ -115,24 +138,114 @@ $redditSupported = validateMediaUrl(
 );
 check($redditSupported['valid'] && ($redditSupported['extractor'] ?? '') === 'Reddit', 'A public native Reddit video failed media-embed validation.');
 check(($redditFetches['media_embed'] ?? '') === $redditPost['mediaEmbedUrl'], 'The Reddit resolver fetched an unexpected endpoint.');
-check(($redditFetches['manifest'] ?? '') === 'https://v.redd.it/media123/HLSPlaylist.m3u8', 'The Reddit fallback did not verify the resolved media playlist.');
+check(($redditFetches['manifest'] ?? '') === 'https://v.redd.it/native123/HLSPlaylist.m3u8', 'The Reddit fallback did not verify the resolved media playlist.');
 check(!in_array('www.reddit.com', $redditResolvedHosts, true) && in_array('www.redditmedia.com', $redditResolvedHosts, true) && in_array('v.redd.it', $redditResolvedHosts, true), 'Reddit validation resolved a submitted host it never contacts or skipped a contacted host.');
 check(!$redditRunnerCalled, 'Reddit validation still performs the slower generic extractor probe.');
 check(($redditSupported['downloadUrl'] ?? '') === ($redditFetches['manifest'] ?? null), 'The validated Reddit media URL was not retained for processing.');
-check(($redditSupported['sourceTitle'] ?? '') === 'A public video', 'The validated Reddit title was not normalized to its saved filename.');
-$redditNoVideo = resolveRedditVideo(
-  $redditUrl,
-  fn($host) => ['8.8.8.8'],
-  fn($embedUrl, $timeout) => ['exitCode' => 0, 'stdout' => '<p>No native video</p>', 'stderr' => '', 'timedOut' => false]
-);
-check(!$redditNoVideo['valid'] && str_contains($redditNoVideo['message'], 'native video'), 'A Reddit post without public native video media received an unclear error.');
-$redditBrokenManifest = resolveRedditVideo(
+check(($redditSupported['sourceTitle'] ?? '') === 'Native Reddit Video', 'The validated Reddit title was not normalized to its saved filename.');
+foreach ([
+  'self-post.html' => 'self-post',
+  'gallery.html' => 'gallery',
+  'deleted-private.html' => 'deleted, private, or unavailable',
+  'private-post.html' => 'deleted, private, or unavailable'
+] as $fixture => $messageFragment) {
+  $missingResult = resolveRedditPost(
+    $redditUrl,
+    fn($host) => ['8.8.8.8'],
+    fn($fetchUrl, $timeout, $stage) => ['exitCode' => 0, 'stdout' => redditFixture($fixture), 'stderr' => '', 'timedOut' => false]
+  );
+  check(!$missingResult['valid'] && str_contains($missingResult['message'], $messageFragment), "The $fixture result was not explained clearly.");
+}
+$redditBrokenManifest = resolveRedditPost(
   $redditUrl,
   fn($host) => ['8.8.8.8'],
   fn($fetchUrl, $timeout, $stage) => ['exitCode' => 0, 'stdout' => $stage === 'media_embed' ? $redditMediaEmbedHtml : '<html>not media</html>', 'stderr' => '', 'timedOut' => false]
 );
 check(!$redditBrokenManifest['valid'] && str_contains($redditBrokenManifest['message'], 'media stream'), 'An invalid Reddit HLS manifest was accepted or explained unclearly.');
 check(($redditBrokenManifest['diagnosticStage'] ?? '') === 'reddit_manifest_fetch', 'The Reddit manifest failure was not identified in diagnostics.');
+
+$externalValidationUrl = null;
+$redditExternalSupported = validateMediaUrl(
+  $redditUrl,
+  fn($host) => ['8.8.8.8'],
+  function($command, $timeout) use (&$externalValidationUrl) {
+    $externalValidationUrl = end($command);
+    return ['exitCode' => 0, 'stdout' => '{"id":"wrapped","title":"Provider title","extractor_key":"Youtube","formats":[{"format_id":"18"}]}', 'stderr' => '', 'timedOut' => false];
+  },
+  false,
+  function($fetchUrl, $timeout, $stage) {
+    if ($stage === 'media_embed') return ['exitCode' => 0, 'stdout' => redditFixture('external-youtube.html'), 'stderr' => '', 'timedOut' => false];
+    if ($stage === 'redirect_probe') return ['exitCode' => 0, 'stdout' => "HTTP/2 200\r\n\r\n", 'stderr' => '', 'timedOut' => false];
+    return ['exitCode' => 1, 'stdout' => '', 'stderr' => 'unexpected fetch', 'timedOut' => false];
+  }
+);
+check($redditExternalSupported['valid'] && ($redditExternalSupported['extractor'] ?? '') === 'Youtube', 'A supported provider wrapped by Reddit failed normal validation.');
+check($externalValidationUrl === 'https://youtu.be/video123' && ($redditExternalSupported['downloadUrl'] ?? '') === $externalValidationUrl, 'The external Reddit destination did not enter the normal provider pipeline.');
+check(($redditExternalSupported['sourceTitle'] ?? '') === 'A YouTube Wrapper' && ($redditExternalSupported['originalUrl'] ?? '') === $redditUrl, 'The Reddit title or original URL was not preserved for an external provider.');
+check(str_contains($redditExternalSupported['message'] ?? '', 'from Reddit'), 'The external-provider status does not identify the Reddit wrapper.');
+$externalDiagnostic = validationDiagnosticDetails($redditExternalSupported, 25);
+check(($externalDiagnostic['destination'] ?? '') === 'https://youtu.be/video123' && ($externalDiagnostic['provider'] ?? '') === 'YouTube', 'External Reddit provider diagnostics are incomplete.');
+$wrappedDownloadCommand = buildYtDlpCommand($redditExternalSupported['downloadUrl'], 'base', '/tmp/work', $redditExternalSupported['sourceTitle']);
+check(end($wrappedDownloadCommand) === 'https://youtu.be/video123', 'The resolved provider URL was not passed to the download pipeline.');
+
+$postEmbedFallback = resolveRedditPost(
+  $redditUrl,
+  fn($host) => ['8.8.8.8'],
+  function($fetchUrl, $timeout, $stage) {
+    if ($stage === 'media_embed') return ['exitCode' => 0, 'stdout' => '<p>No metadata here</p>', 'stderr' => '', 'timedOut' => false];
+    if ($stage === 'post_embed') return ['exitCode' => 0, 'stdout' => redditFixture('external-vimeo.html'), 'stderr' => '', 'timedOut' => false];
+    return ['exitCode' => 0, 'stdout' => "HTTP/2 200\r\n\r\n", 'stderr' => '', 'timedOut' => false];
+  }
+);
+check($postEmbedFallback['valid'] && ($postEmbedFallback['downloadUrl'] ?? '') === 'https://vimeo.com/123456', 'The general Reddit embed metadata fallback did not resolve an external provider.');
+
+$redirectCases = json_decode(redditFixture('redirect-cases.json'), true);
+$safeRedirectHtml = str_replace('https://youtu.be/video123', 'https://short.public-site.net/start', redditFixture('external-youtube.html'));
+$safeRedirectResult = resolveRedditPost(
+  $redditUrl,
+  fn($host) => ['8.8.8.8'],
+  function($fetchUrl, $timeout, $stage) use ($safeRedirectHtml, $redirectCases) {
+    if ($stage === 'media_embed') return ['exitCode' => 0, 'stdout' => $safeRedirectHtml, 'stderr' => '', 'timedOut' => false];
+    $location = $redirectCases['safe_chain'][$fetchUrl] ?? null;
+    return ['exitCode' => 0, 'stdout' => $location === null ? "HTTP/2 200\r\n\r\n" : "HTTP/2 302\r\nLocation: $location\r\n\r\n", 'stderr' => '', 'timedOut' => false];
+  }
+);
+check($safeRedirectResult['valid'] && ($safeRedirectResult['downloadUrl'] ?? '') === 'https://www.youtube.com/watch?v=video123', 'A safe bounded redirect chain did not resolve to its provider.');
+check(count($safeRedirectResult['redirectChain'] ?? []) === 3, 'The safe redirect chain was not retained for diagnostics.');
+
+foreach ([
+  'hostile_redirect' => ['start' => 'https://short.public-site.net/hostile', 'stage' => 'reddit_redirect_target', 'message' => 'unsafe or private'],
+  'private_network' => ['start' => 'https://short.public-site.net/private', 'stage' => 'reddit_redirect_target', 'message' => 'unsafe or private'],
+  'loop' => ['start' => 'https://short.public-site.net/a', 'stage' => 'reddit_redirect_loop', 'message' => 'redirect loop'],
+  'too_many' => ['start' => 'https://short.public-site.net/hop-0', 'stage' => 'reddit_redirect_limit', 'message' => 'too many redirects']
+] as $caseName => $expectation) {
+  $caseHtml = str_replace('https://youtu.be/video123', $expectation['start'], redditFixture('external-youtube.html'));
+  $caseResult = resolveRedditPost(
+    $redditUrl,
+    fn($host) => $host === 'private.public-site.net' ? ['10.0.0.8'] : ['8.8.8.8'],
+    function($fetchUrl, $timeout, $stage) use ($caseHtml, $redirectCases, $caseName) {
+      if ($stage === 'media_embed') return ['exitCode' => 0, 'stdout' => $caseHtml, 'stderr' => '', 'timedOut' => false];
+      $location = $redirectCases[$caseName][$fetchUrl] ?? null;
+      return ['exitCode' => 0, 'stdout' => $location === null ? "HTTP/2 200\r\n\r\n" : "HTTP/2 302\r\nLocation: $location\r\n\r\n", 'stderr' => '', 'timedOut' => false];
+    }
+  );
+  check(!$caseResult['valid'] && ($caseResult['diagnosticStage'] ?? '') === $expectation['stage'], "The $caseName redirect fixture was not blocked at the expected stage.");
+  check(str_contains(strtolower($caseResult['message'] ?? ''), $expectation['message']), "The $caseName redirect fixture received an unclear error.");
+}
+
+$unsupportedRedditProvider = validateMediaUrl(
+  $redditUrl,
+  fn($host) => ['8.8.8.8'],
+  fn($command, $timeout) => ['exitCode' => 1, 'stdout' => '', 'stderr' => 'ERROR: Unsupported URL: https://unsupported.public-site.net/watch/one', 'timedOut' => false],
+  false,
+  function($fetchUrl, $timeout, $stage) {
+    if ($stage === 'media_embed') return ['exitCode' => 0, 'stdout' => redditFixture('unsupported-provider.html'), 'stderr' => '', 'timedOut' => false];
+    return ['exitCode' => 0, 'stdout' => "HTTP/2 200\r\n\r\n", 'stderr' => '', 'timedOut' => false];
+  }
+);
+check(!$unsupportedRedditProvider['valid'] && str_contains($unsupportedRedditProvider['message'] ?? '', 'unsupported.public-site.net'), 'An unsupported Reddit destination did not identify its provider.');
+check(!str_contains(strtolower($unsupportedRedditProvider['message'] ?? ''), 'native video'), 'An unsupported Reddit destination was mislabeled as missing native video.');
+
 $cacheRuns = 0;
 $cacheRunner = function($command, $timeout) use (&$cacheRuns) {
   $cacheRuns++;
@@ -234,7 +347,7 @@ check(recordUrlEvent($ownerA, 'field_paste', 'https://media.public-site.net/watc
 $recentEvents = listUrlEvents(1);
 check(($recentEvents[0]['url'] ?? '') === 'https://media.public-site.net/watch?token=debug' && ($recentEvents[0]['event_type'] ?? '') === 'field_paste', 'URL diagnostics did not retain the attempted URL and interaction.');
 check(($recentEvents[0]['details']['trigger'] ?? '') === 'paste', 'URL diagnostic details were not retained.');
-check((appBuildInfo()['version'] ?? '') === '2026.10.23', 'Build information is not available to the Help dialog.');
+check((appBuildInfo()['version'] ?? '') === '2026.10.24', 'Build information is not available to the Help dialog.');
 $sourceDir = $testRoot . '/source';
 mkdir($sourceDir, 0775, true);
 file_put_contents($sourceDir . '/Example & notes.txt', 'private transcript');

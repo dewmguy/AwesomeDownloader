@@ -1,0 +1,24 @@
+{
+  "safe_chain": {
+    "https://short.public-site.net/start": "https://redirect.public-site.net/next",
+    "https://redirect.public-site.net/next": "https://www.youtube.com/watch?v=video123"
+  },
+  "hostile_redirect": {
+    "https://short.public-site.net/hostile": "http://169.254.169.254/latest/meta-data/"
+  },
+  "private_network": {
+    "https://short.public-site.net/private": "https://private.public-site.net/media"
+  },
+  "loop": {
+    "https://short.public-site.net/a": "https://short.public-site.net/b",
+    "https://short.public-site.net/b": "https://short.public-site.net/a"
+  },
+  "too_many": {
+    "https://short.public-site.net/hop-0": "https://short.public-site.net/hop-1",
+    "https://short.public-site.net/hop-1": "https://short.public-site.net/hop-2",
+    "https://short.public-site.net/hop-2": "https://short.public-site.net/hop-3",
+    "https://short.public-site.net/hop-3": "https://short.public-site.net/hop-4",
+    "https://short.public-site.net/hop-4": "https://short.public-site.net/hop-5",
+    "https://short.public-site.net/hop-5": "https://short.public-site.net/hop-6"
+  }
+}
